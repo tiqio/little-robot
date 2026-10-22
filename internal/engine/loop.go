@@ -7,7 +7,15 @@ import (
 	"little-robot/internal/schema"
 	"little-robot/internal/tools"
 	"log"
+	"sync"
 )
+
+/*
+	如何把call循环变成并发，需要注意哪些地方？
+	1. history不能在goroutine里面append：这样会竞争，因此需要收集到一个局部切片，WaitGroup等齐了，再一次性append进history
+	2. 结果顺序必须和请求顺序一致：模型发的是[call_0, call_1, call_2]，对应三个tool_call_id，虽然靠ToolCallID认领，但把结果按照原顺序放回去更安全，很多后端要求tool消息在assistant消息后面，而且顺序一致，goroutine(idx=1)只写observationMsgs[1]
+	3. 循环变量要显式传给goroutine：for _, call := range ...里，call是共享的同一个变量，goroutine启动时它可能已经变成下一次的值了，Go 1.22起每个迭代有独立变量，但是这样永远不会有歧义
+*/
 
 // 结构体
 type AgentEngine struct {
@@ -80,25 +88,62 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 			break
 		}
 
-		log.Printf("[Engine] 模型请求调用%d个工具...\n", len(resp.ToolCalls))
+		/*
+			log.Printf("[Engine] 模型请求调用%d个工具...\n", len(resp.ToolCalls))
 
-		for _, call := range resp.ToolCalls {
-			log.Printf("	-> 执行工具：%s，参数：%s\n", call.Name, string(call.Arguments))
+			for _, call := range resp.ToolCalls {
+				log.Printf("	-> 执行工具：%s，参数：%s\n", call.Name, string(call.Arguments))
 
-			result := e.registry.Execute(ctx, call)
+				result := e.registry.Execute(ctx, call)
 
-			if result.IsError {
-				log.Printf("	-> 工具执行报错：%s\n", result.Output)
-			} else {
-				log.Printf("	-> 工具执行成功（返回%d字节）\n", len(result.Output))
+				if result.IsError {
+					log.Printf("	-> 工具执行报错：%s\n", result.Output)
+				} else {
+					log.Printf("	-> 工具执行成功（返回%d字节）\n", len(result.Output))
+				}
+
+				history = append(history, schema.Message{ // 工具结果伪装成user
+					Role:       schema.RoleUser, // 靠ToolCallID认领
+					Content:    result.Output,
+					ToolCallID: call.ID, // 这条ID是回填的证据
+				}) // 注释掉这个mock不变，因为mock靠计数器，不靠历史，而且当mock永远返回ToolCalls后会死循环刷屏，这就是加护栏的原因
 			}
+		*/
 
-			history = append(history, schema.Message{ // 工具结果伪装成user
-				Role:       schema.RoleUser, // 靠ToolCallID认领
-				Content:    result.Output,
-				ToolCallID: call.ID, // 这条ID是回填的证据
-			}) // 注释掉这个mock不变，因为mock靠计数器，不靠历史，而且当mock永远返回ToolCalls后会死循环刷屏，这就是加护栏的原因
+		log.Printf("[Engine] 模型请求并发调用%d个工具...\n", len(resp.ToolCalls))
+
+		// 预分配：每个goroutine写自己的下标，天然保序且不需要加锁
+		observationMsgs := make([]schema.Message, len(resp.ToolCalls))
+		var wg sync.WaitGroup
+
+		for i, call := range resp.ToolCalls {
+			wg.Add(1)
+
+			// i和call显式传参，避免闭包捕获循环变量带来的歧义
+			go func(idx int, c schema.ToolCall) {
+				defer wg.Done()
+
+				log.Printf("\t-> [%d] 执行工具：%s，参数：%s\n", idx, c.Name, string(c.Arguments))
+				result := e.registry.Execute(ctx, c)
+
+				if result.IsError {
+					log.Printf("\t-> [%d] 工具执行报错：%s\n", idx, result.Output)
+				} else {
+					log.Printf("\t-> [%d] 工具执行成功（返回%d字节）\n", idx, len(result.Output))
+				}
+
+				observationMsgs[idx] = schema.Message{
+					Role:       schema.RoleUser,
+					Content:    result.Output,
+					ToolCallID: c.ID,
+				}
+			}(i, call)
 		}
+
+		wg.Wait() // 等待所有工具跑完
+
+		// 按照顺序追加回历史，保证tool消息的次序和tool_calls一致
+		history = append(history, observationMsgs...)
 	}
 
 	return nil
