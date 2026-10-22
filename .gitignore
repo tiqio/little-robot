@@ -1,4 +1,4 @@
 robot.exe
 /robot
 *.log
-
+.env
