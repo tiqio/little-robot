@@ -140,6 +140,7 @@ func main() {
 	registry.Register(tools.NewReadFileTool(workDir))
 	registry.Register(tools.NewWriteFileTool(workDir))
 	registry.Register(tools.NewBashTool(workDir))
+	registry.Register(tools.NewEditFileTool(workDir))
 
 	// eng := engine.NewAgentEngine(&mockProvider{}, &mockRegistry{}, workDir, true)
 	eng := engine.NewAgentEngine(p, registry, workDir, false)
@@ -148,7 +149,8 @@ func main() {
 	// if err := eng.Run(context.Background(), "北京今天天气怎么样？适合出去跑步吗？"); err != nil {
 	//if err := eng.Run(context.Background(), "读一下工作区里面的hello.txt，用一句话告诉我它写了什么？"); err != nil {
 	//if err := eng.Run(context.Background(), "在工作区新建notes/demo.md，基于hello.txt文本中的内容写一首诗，用中文写"); err != nil {
-	if err := eng.Run(context.Background(), "查看一下当前目录下面有哪些文件"); err != nil {
+	//if err := eng.Run(context.Background(), "查看一下当前目录下面有哪些文件"); err != nil {
+	if err := eng.Run(context.Background(), "帮我把notes/demo.md里的火改成风"); err != nil {
 		log.Fatalf("引擎运行崩溃：%v", err)
 	}
 }

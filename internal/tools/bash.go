@@ -29,8 +29,9 @@ func (t *BashTool) Name() string {
 
 func (t *BashTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
-		Name:        t.Name(),
-		Description: "在工具区执行一条bash命令，支持&&串联，返回stdout和stderr的合并输出，最长8000字节，超时30秒，命令的厨师目录是工作区",
+		Name: t.Name(),
+		Description: "在工具区执行一条bash命令，支持&&串联，返回stdout和stderr的合并输出，最长8000字节，超时30秒，命令的厨师目录是工作区\n" +
+			"注意：读取文件请用read_file，写入或整体覆盖文件请用write_file，修改已有文件中的局部内容请用edit_file，不要用cat/head读文件，不要用sed/echo写文件",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

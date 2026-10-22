@@ -32,7 +32,8 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 
 	history := []schema.Message{
 		{
-			Role:    schema.RoleSystem,
+			Role: schema.RoleSystem,
+			// 这里的system prompt一个字都没有说什么情况下用哪个工具，所以相当于把4个工具告诉它随便用，解决方法是换成结构化的一段，或者在工具的Description里面进行限制
 			Content: "You are little-robot, an expert coding assistant. You have full access to tools in the workspace",
 		},
 		{
