@@ -68,7 +68,7 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 
 	// 父母路可能还不存在，先补上
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		return "", fmt.Errorf("创建目录%q失败", filepath.Dir(full), err)
+		return "", fmt.Errorf("创建目录%q失败：%w", filepath.Dir(full), err)
 	}
 
 	if err := os.WriteFile(full, []byte(in.Content), 0o644); err != nil {

@@ -64,7 +64,8 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Repor
 
 		// ===== 先做计划不让它跑工具 =====
 		if e.EnableThinking {
-			log.Println("[Phase 1]收走工具，进入规划阶段...")
+			log.Println("[Phase 1] 收走工具，进入规划阶段...")
+			reporter.OnThinkingStart(ctx)
 			thinkResp, err := e.provider.Generate(ctx, history, nil) // 传入nil就是收走工具，能用参数约束的就不要用提示词求它
 			if err != nil {
 				return fmt.Errorf("思考阶段生成失败：%w", err)
