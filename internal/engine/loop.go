@@ -11,17 +11,19 @@ import (
 
 // 结构体
 type AgentEngine struct {
-	provider provider.LLMProvider
-	registry tools.Registry
-	WorkDir  string
+	provider       provider.LLMProvider
+	registry       tools.Registry
+	WorkDir        string
+	EnableThinking bool // 注意这里是大写的，因为外部可以读写
 }
 
 // 构造函数
-func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string) *AgentEngine {
+func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, enableThinking bool) *AgentEngine {
 	return &AgentEngine{
-		provider: p,
-		registry: r,
-		WorkDir:  workDir,
+		provider:       p,
+		registry:       r,
+		WorkDir:        workDir,
+		EnableThinking: enableThinking,
 	}
 }
 
@@ -46,7 +48,21 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 
 		availableTools := e.registry.GetAvailableTools()
 
-		log.Println("[Engine] 正在思考（Reasoning）...")
+		// ===== 先做计划不让它跑工具 =====
+		if e.EnableThinking {
+			log.Println("[Phase 1]收走工具，进入规划阶段...")
+			thinkResp, err := e.provider.Generate(ctx, history, nil) // 传入nil就是收走工具，能用参数约束的就不要用提示词求它
+			if err != nil {
+				return fmt.Errorf("思考阶段生成失败：%w", err)
+			}
+			if thinkResp.Content != "" { // 没有append的时候才跳过，因为不少OpenAI的兼容后端会拒绝{"role":"assistant","content":""}(400)
+				fmt.Printf("[内部思考]：%s\n", thinkResp.Content)
+				history = append(history, *thinkResp) // 支持思考的话要让这个AI看到思考过程
+			}
+		}
+
+		// ===== 挂回工具，让它行动 =====
+		log.Println("[Phase 2] 恢复工具，等待行动...")
 		resp, err := e.provider.Generate(ctx, history, availableTools)
 		if err != nil {
 			return fmt.Errorf("模型生成失败：%w", err)

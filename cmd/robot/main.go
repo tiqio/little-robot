@@ -20,6 +20,14 @@ type mockProvider struct {
 }
 
 func (m *mockProvider) Generate(ctx context.Context, msgs []schema.Message, tools []schema.ToolDefination) (*schema.Message, error) {
+	// main里面mock里需要区分有没有工具
+	if len(tools) == 0 {
+		return &schema.Message{
+			Role:    schema.RoleAssistant,
+			Content: "[推理中]目标是检查用户，不能盲猜，我需要先调用bash执行ls，看清楚有什么再判断",
+		}, nil // 这行不消耗turn计数，所以两阶段的轮次不会错位
+	}
+
 	m.turn++
 	if m.turn == 1 {
 		return &schema.Message{
@@ -44,7 +52,11 @@ func (m *mockProvider) Generate(ctx context.Context, msgs []schema.Message, tool
 type mockRegistry struct{}
 
 func (m *mockRegistry) GetAvailableTools() []schema.ToolDefination {
-	return nil
+	return []schema.ToolDefination{
+		{
+			Name: "bash",
+		},
+	}
 }
 
 func (m *mockRegistry) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
@@ -66,7 +78,7 @@ func main() {
 	// TODO 3（记忆）：第 10-13 章接入上下文管理与会话持久化
 	// TODO 4（心脏）：第 2 章用 engine.NewAgentEngine(...) 把上面三个接起来
 
-	eng := engine.NewAgentEngine(&mockProvider{}, &mockRegistry{}, workDir)
+	eng := engine.NewAgentEngine(&mockProvider{}, &mockRegistry{}, workDir, true)
 
 	if err := eng.Run(context.Background(), "帮我检查当前目录的文件"); err != nil {
 		log.Fatalf("引擎运行崩溃：%v", err)
