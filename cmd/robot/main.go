@@ -151,7 +151,8 @@ func main() {
 	//if err := eng.Run(context.Background(), "在工作区新建notes/demo.md，基于hello.txt文本中的内容写一首诗，用中文写"); err != nil {
 	//if err := eng.Run(context.Background(), "查看一下当前目录下面有哪些文件"); err != nil {
 	//if err := eng.Run(context.Background(), "帮我把notes/demo.md里的火改成风"); err != nil {
-	if err := eng.Run(context.Background(), "请并行执行三条bash命令，sleep 2 && echo A，sleep 2 && echo B，sleep 2 && echo C，然后打印三个echo时的时间戳"); err != nil {
+	//if err := eng.Run(context.Background(), "请并行执行三条bash命令，sleep 2 && echo A，sleep 2 && echo B，sleep 2 && echo C，然后打印三个echo时的时间戳"); err != nil {
+	if err := eng.Run(context.Background(), "读取一下工作区里面的hello.txt，用一句话告诉我它写了什么", engine.NewTerminalReporter()); err != nil {
 		log.Fatalf("引擎运行崩溃：%v", err)
 	}
 }

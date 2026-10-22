@@ -35,7 +35,12 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 	}
 }
 
-func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
+func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Reporter) error {
+	// 一处都低，后面就不用每个回调都判空；漏判一处就是panic
+	if reporter == nil {
+		reporter = NewTerminalReporter()
+	}
+
 	log.Printf("[Engine] 引擎启动，工作区：%s\n", e.WorkDir)
 
 	history := []schema.Message{
@@ -65,7 +70,8 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 				return fmt.Errorf("思考阶段生成失败：%w", err)
 			}
 			if thinkResp.Content != "" { // 没有append的时候才跳过，因为不少OpenAI的兼容后端会拒绝{"role":"assistant","content":""}(400)
-				fmt.Printf("[内部思考]：%s\n", thinkResp.Content)
+				//fmt.Printf("[内部思考]：%s\n", thinkResp.Content)
+				reporter.OnThinkingText(ctx, thinkResp.Content)
 				history = append(history, *thinkResp) // 支持思考的话要让这个AI看到思考过程
 			}
 		}
@@ -80,11 +86,12 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 		history = append(history, *resp) // 模型的话也要进入历史
 
 		if resp.Content != "" {
-			fmt.Printf("模型：%s\n", resp.Content)
+			//fmt.Printf("模型：%s\n", resp.Content)
+			reporter.OnAssistantMessage(ctx, resp.Content)
 		}
 
 		if len(resp.ToolCalls) == 0 {
-			log.Println("[Engine] 模型不再请求工具，任务完成，推出循环")
+			log.Println("[Engine] 模型不再请求工具，任务完成，退出循环")
 			break
 		}
 
@@ -123,14 +130,16 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 			go func(idx int, c schema.ToolCall) {
 				defer wg.Done()
 
-				log.Printf("\t-> [%d] 执行工具：%s，参数：%s\n", idx, c.Name, string(c.Arguments))
+				//log.Printf("\t-> [%d] 执行工具：%s，参数：%s\n", idx, c.Name, string(c.Arguments))
+				reporter.OnToolCall(ctx, c)
 				result := e.registry.Execute(ctx, c)
 
-				if result.IsError {
-					log.Printf("\t-> [%d] 工具执行报错：%s\n", idx, result.Output)
-				} else {
-					log.Printf("\t-> [%d] 工具执行成功（返回%d字节）\n", idx, len(result.Output))
-				}
+				//if result.IsError {
+				//	log.Printf("\t-> [%d] 工具执行报错：%s\n", idx, result.Output)
+				//} else {
+				//	log.Printf("\t-> [%d] 工具执行成功（返回%d字节）\n", idx, len(result.Output))
+				//}
+				reporter.OnToolResult(ctx, c, result)
 
 				observationMsgs[idx] = schema.Message{
 					Role:       schema.RoleUser,
