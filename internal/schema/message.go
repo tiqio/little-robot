@@ -19,7 +19,7 @@ type Message struct {
 }
 
 // 你给模型，”我有哪些工具，每个要什么参数“，user
-type ToolDefination struct {
+type ToolDefinition struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
 	InputSchema interface{} `json:"input_schema"`

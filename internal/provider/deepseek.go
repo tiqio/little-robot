@@ -86,7 +86,7 @@ func NewDeepSeekProvider(apiKey, baseURL, model string) *DeepSeekProvider {
 	}
 }
 
-func (p *DeepSeekProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefination) (*schema.Message, error) {
+func (p *DeepSeekProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
 	reqBody := chatRequest{
 		Model:    p.model,
 		Messages: toChatMessages(msgs),
@@ -194,7 +194,7 @@ func toChatMessages(msgs []schema.Message) []chatMessage {
 	return out
 }
 
-func toChatTools(defs []schema.ToolDefination) []chatTool {
+func toChatTools(defs []schema.ToolDefinition) []chatTool {
 	if len(defs) == 0 {
 		return nil
 	}

@@ -20,7 +20,7 @@ type mockProvider struct {
 	turn int
 }
 
-func (m *mockProvider) Generate(ctx context.Context, msgs []schema.Message, tools []schema.ToolDefination) (*schema.Message, error) {
+func (m *mockProvider) Generate(ctx context.Context, msgs []schema.Message, tools []schema.ToolDefinition) (*schema.Message, error) {
 	// main里面mock里需要区分有没有工具
 	if len(tools) == 0 {
 		return &schema.Message{
@@ -52,9 +52,14 @@ func (m *mockProvider) Generate(ctx context.Context, msgs []schema.Message, tool
 
 type mockRegistry struct{}
 
+// Register implements [tools.Registry].
+func (m *mockRegistry) Register(tool tools.BaseTool) {
+	panic("unimplemented")
+}
+
 /*
-func (m *mockRegistry) GetAvailableTools() []schema.ToolDefination {
-	return []schema.ToolDefination{
+func (m *mockRegistry) GetAvailableTools() []schema.ToolDefinition {
+	return []schema.ToolDefinition{
 		{
 			Name: "bash",
 		},
@@ -70,8 +75,8 @@ func (m *mockRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
 }
 */
 
-func (m *mockRegistry) GetAvailableTools() []schema.ToolDefination {
-	return []schema.ToolDefination{
+func (m *mockRegistry) GetAvailableTools() []schema.ToolDefinition {
+	return []schema.ToolDefinition{
 		{
 			Name:        "get_weather",
 			Description: "查询指定城市的当前天气",
@@ -131,11 +136,15 @@ func main() {
 	// TODO 3（记忆）：第 10-13 章接入上下文管理与会话持久化
 	// TODO 4（心脏）：第 2 章用 engine.NewAgentEngine(...) 把上面三个接起来
 
+	registry := tools.NewRegistry()
+	registry.Register((tools.NewReadFileTool(workDir)))
+
 	// eng := engine.NewAgentEngine(&mockProvider{}, &mockRegistry{}, workDir, true)
-	eng := engine.NewAgentEngine(p, &mockRegistry{}, workDir, false)
+	eng := engine.NewAgentEngine(p, registry, workDir, false)
 
 	// if err := eng.Run(context.Background(), "帮我检查当前目录的文件"); err != nil {
-	if err := eng.Run(context.Background(), "北京今天天气怎么样？适合出去跑步吗？"); err != nil {
+	// if err := eng.Run(context.Background(), "北京今天天气怎么样？适合出去跑步吗？"); err != nil {
+	if err := eng.Run(context.Background(), "读一下工作区里面的hello.txt，用一句话告诉我它写了什么？"); err != nil {
 		log.Fatalf("引擎运行崩溃：%v", err)
 	}
 }
