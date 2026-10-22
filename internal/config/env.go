@@ -44,3 +44,10 @@ func LoadEnvFile(path string) error {
 	}
 	return scanner.Err()
 }
+
+func Get(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}

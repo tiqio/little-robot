@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"little-robot/internal/config"
 	"little-robot/internal/engine"
 	"little-robot/internal/provider"
 	"little-robot/internal/schema"
@@ -51,6 +52,7 @@ func (m *mockProvider) Generate(ctx context.Context, msgs []schema.Message, tool
 
 type mockRegistry struct{}
 
+/*
 func (m *mockRegistry) GetAvailableTools() []schema.ToolDefination {
 	return []schema.ToolDefination{
 		{
@@ -66,8 +68,59 @@ func (m *mockRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
 		IsError:    false,
 	}
 }
+*/
+
+func (m *mockRegistry) GetAvailableTools() []schema.ToolDefination {
+	return []schema.ToolDefination{
+		{
+			Name:        "get_weather",
+			Description: "查询指定城市的当前天气",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"city": map[string]any{
+						"type":        "string",
+						"description": "城市名称，例如北京",
+					},
+				},
+				"required": []string{"city"},
+			},
+		}, // 注意如果是数组或者对象的话记得加","
+	}
+}
+
+func (m *mockRegistry) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
+	if call.Name != "get_weather" {
+		return schema.ToolResult{
+			ToolCallID: call.ID,
+			Output:     "未知工具：" + call.Name,
+			IsError:    true,
+		}
+	}
+	return schema.ToolResult{
+		ToolCallID: call.ID,
+		Output:     `{"city":"北京","weather":"晴天","temp_c":25,"wind":"微风"}`,
+		IsError:    false,
+	}
+}
 
 func main() {
+	// 使用自己的Provider
+	if err := config.LoadEnvFile(".env"); err != nil {
+		log.Printf("没有读到.env（%v），将只用系统环境变量", err)
+	}
+
+	apiKey := os.Getenv("DEEPSEEK_API_KEY")
+	if apiKey == "" {
+		log.Fatal("DEEPSEEK_API_KEY没有设置，检查.env")
+	}
+
+	p := provider.NewDeepSeekProvider(
+		apiKey,
+		config.Get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+		config.Get("DEEPSEEK_MODEL", "deepseek-flash"),
+	)
+
 	workDir, err := os.Getwd()
 	if err != nil {
 		log.Fatalf("拿不到工作目录：%v", err)
@@ -78,9 +131,11 @@ func main() {
 	// TODO 3（记忆）：第 10-13 章接入上下文管理与会话持久化
 	// TODO 4（心脏）：第 2 章用 engine.NewAgentEngine(...) 把上面三个接起来
 
-	eng := engine.NewAgentEngine(&mockProvider{}, &mockRegistry{}, workDir, true)
+	// eng := engine.NewAgentEngine(&mockProvider{}, &mockRegistry{}, workDir, true)
+	eng := engine.NewAgentEngine(p, &mockRegistry{}, workDir, false)
 
-	if err := eng.Run(context.Background(), "帮我检查当前目录的文件"); err != nil {
+	// if err := eng.Run(context.Background(), "帮我检查当前目录的文件"); err != nil {
+	if err := eng.Run(context.Background(), "北京今天天气怎么样？适合出去跑步吗？"); err != nil {
 		log.Fatalf("引擎运行崩溃：%v", err)
 	}
 }
