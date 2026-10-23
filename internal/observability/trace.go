@@ -55,7 +55,7 @@ func StartSpan(ctx context.Context, name string) (context.Context, *Span) {
 func (s *Span) End() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.EndTime.IsZero() { // 防止重复End把时长算成0，这个很重要：defer和显式调用撞在一起时会End两次，第二次会把DurationMs算成0
+	if !s.EndTime.IsZero() { // 防止重复End把时长算成0，这个很重要：defer和显式调用撞在一起时会End两次，可以维持DurationMs的精准性，否则DurationMs会被算成0
 		return
 	}
 	s.EndTime = time.Now()

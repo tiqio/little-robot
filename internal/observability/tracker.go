@@ -142,3 +142,29 @@ func (t *CostTracker) Report() string {
 		hitRatio(t.hitTokens, t.missTokens),
 		t.outputTokens, avg.Round(time.Millisecond), total)
 }
+
+// Stats 是给评测/报表用的结构体快照
+// Report 是给人看的字符串，Stats是给程序读的数字
+type Stats struct {
+	Calls        int
+	FailedCalls  int
+	HitTokens    int
+	MissTokens   int
+	OutputTokens int
+	TotalLatency time.Duration
+	CostCNY      float64
+}
+
+func (t *CostTracker) Stats() Stats {
+	t.mu.Lock() // t.calls，t.hitTokens这些字段是在generate里被并发写的（主循环+子代理），所以Stats()不加锁去读，go run -race会报错
+	defer t.mu.Unlock()
+	return Stats{
+		Calls:        t.calls,
+		FailedCalls:  t.failedCalls,
+		HitTokens:    t.hitTokens,
+		MissTokens:   t.missTokens,
+		OutputTokens: t.outputTokens,
+		TotalLatency: t.totalLatency,
+		CostCNY:      t.price.Cost(t.hitTokens, t.missTokens, t.outputTokens),
+	}
+}
