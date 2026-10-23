@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"little-robot/internal/observability"
 	"little-robot/internal/schema"
 	"log"
 	"sort"
@@ -78,12 +79,20 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 		}
 	}
 
+	// 在拿到tool之后，真正执行之前可以补充call信息，执行之后可以补充out信息
+	ctx, span := observability.StartSpan(ctx, "tool:"+call.Name)
+	defer span.End()
+	span.Set("args_len", len(call.Arguments))
+	span.Set("is_error", false) // 默认成功，失败路径覆盖它
+
 	// 在路由完成后，真正执行前插一段中间件链，任何一个拒绝，工具就不执行
 	// 为什么使用中间件而不是在每个工具里面加判断：审批、审计、限流、耗时统计都是“横切”的，中间件让你只写一次，而且工具自己不知道由审批这回事（跟BaseTool不知道模型存在是同一个设计哲学）
 	for _, mw := range r.middlewares {
 		allowed, reason := mw(ctx, call)
 		if !allowed {
 			log.Printf("[Registry] 工具%s被拦截：%s", call.Name, reason)
+			span.Set("is_error", true)
+			span.Set("blocked_by", "middleware")
 			return schema.ToolResult{
 				ToolCallID: call.ID,
 				Output:     fmt.Sprintf("执行被系统拦截，原因：%s", reason),
@@ -94,6 +103,7 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 
 	out, err := tool.Execute(ctx, call.Arguments) // BaseTool只返回string和error，不反悔ToolResult，它不需要直到模型的存在
 	if err != nil {
+		span.Set("is_error", true)
 		// msg := hintFor(call.Name, msg) 增加固定引导词，但是没什么必要，直接返回失败就可以
 		return schema.ToolResult{ // Registry层负责把error翻译成ToolResult{IsError: true}，交给模型看
 			ToolCallID: call.ID,
@@ -101,6 +111,9 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 			IsError:    true,
 		}
 	}
+
+	//span.Set("is_error", false)
+	span.Set("out_len", len(out))
 
 	return schema.ToolResult{
 		ToolCallID: call.ID,

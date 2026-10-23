@@ -3,12 +3,14 @@ package engine
 import (
 	"context"
 	"fmt"
+	"little-robot/internal/observability"
 	"little-robot/internal/prompt"
 	"little-robot/internal/provider"
 	"little-robot/internal/schema"
 	"little-robot/internal/session"
 	"little-robot/internal/tools"
 	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -54,6 +56,21 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 	if reporter == nil {
 		reporter = NewTerminalReporter()
 	}
+
+	// 开根Span，退出时落盘
+	ctx, root := observability.StartSpan(ctx, "run") // root挂进ctx，同时ctx被替换，一路传到registry.Execute，从ctx里面取得root，append成它的孩子
+	root.Set("session", s.ID)
+	root.Set("workdir", e.WorkDir)
+	root.Set("prompt_len", len(userPrompt))
+	defer func() {
+		root.End()
+		path, err := root.Save(filepath.Join(e.WorkDir, ".claw", "traces"))
+		if err != nil {
+			log.Printf("[Trace] 落盘失败：%v", err)
+			return
+		}
+		log.Printf("[Trace] 已保存：%s", path)
+	}()
 
 	log.Printf("[Engine] 会话 %s | 工作区 %s | 已有历史 %d 条", s.ID, e.WorkDir, s.Len())
 

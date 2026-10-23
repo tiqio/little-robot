@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"little-robot/internal/observability"
 	"little-robot/internal/schema"
 	"little-robot/internal/tools"
 	"log"
@@ -33,6 +34,10 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, reg tools.R
 			Content: taskPrompt,
 		},
 	}
+
+	ctx, span := observability.StartSpan(ctx, "subagent")
+	defer span.End()
+	span.Set("task_len", len(taskPrompt))
 
 	for turn := 1; ; turn++ {
 

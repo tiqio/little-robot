@@ -61,6 +61,10 @@ func NewCostTracker(next provider.LLMProvider, model string, price Price) *CostT
 }
 
 func (t *CostTracker) Generate(ctx context.Context, msgs []schema.Message, tools []schema.ToolDefinition) (*schema.Message, error) {
+	// 给每次LLM调用加Span，注意：要用同一个ctx，否则会挂到错误的父节点上
+	ctx, span := StartSpan(ctx, "llm")
+	defer span.End()
+
 	start := time.Now()
 	resp, err := t.next.Generate(ctx, msgs, tools)
 	latency := time.Since(start)
@@ -69,6 +73,7 @@ func (t *CostTracker) Generate(ctx context.Context, msgs []schema.Message, tools
 		t.mu.Lock()
 		t.failedCalls++
 		t.mu.Unlock()
+		span.Set("is_error", true)
 		log.Printf("[Cost] %s 调用失败（耗时%v）：%v", t.model, latency.Round(time.Millisecond), err)
 		return nil, err
 	}
@@ -83,6 +88,11 @@ func (t *CostTracker) Generate(ctx context.Context, msgs []schema.Message, tools
 			miss = resp.Usage.PromptTokens
 		}
 	}
+
+	span.Set("model", t.model)
+	span.Set("hit", hit)
+	span.Set("miss", miss)
+	span.Set("out", out) // llm的duration_ms和latency_ms基本一致，此时属性里的latency_ms就重复了，可以删掉
 
 	t.mu.Lock()
 	t.calls++
