@@ -8,6 +8,7 @@ import (
 
 	"little-robot/internal/config"
 	"little-robot/internal/engine"
+	"little-robot/internal/guard"
 	"little-robot/internal/provider"
 	"little-robot/internal/schema"
 	"little-robot/internal/session"
@@ -54,6 +55,11 @@ func (m *mockProvider) Generate(ctx context.Context, msgs []schema.Message, tool
 }
 
 type mockRegistry struct{}
+
+// Use implements [tools.Registry].
+func (m *mockRegistry) Use(mw tools.MiddlewareFunc) {
+	panic("unimplemented")
+}
 
 // Register implements [tools.Registry].
 func (m *mockRegistry) Register(tool tools.BaseTool) {
@@ -155,10 +161,11 @@ func main() {
 	registry.Register(tools.NewWriteFileTool(workDir))
 	registry.Register(tools.NewBashTool(workDir))
 	registry.Register(tools.NewEditFileTool(workDir))
+	registry.Use(guard.Middleware(guard.NewTerminalApprover()))
 
 	// eng := engine.NewAgentEngine(&mockProvider{}, &mockRegistry{}, workDir, true)
 	eng := engine.NewAgentEngine(p, registry, workDir, false)
-	eng.PlanMode = true // 打开计划模式
+	// eng.PlanMode = true // 打开计划模式
 
 	// if err := eng.Run(context.Background(), "帮我检查当前目录的文件"); err != nil {
 	// if err := eng.Run(context.Background(), "北京今天天气怎么样？适合出去跑步吗？"); err != nil {
@@ -194,7 +201,8 @@ func main() {
 		3. 为了记住一个名字花费了5轮，因为不是能力问题
 	*/
 
-	if err := eng.Run(ctx, s, "给little-robot加一个/version子命令：cmd/robot支持-version参数打印版本号，版本好号var Version=\"dev\"读，改完跑go build确认能过", engine.NewTerminalReporter()); err != nil {
+	// if err := eng.Run(ctx, s, "给little-robot加一个/version子命令：cmd/robot支持-version参数打印版本号，版本好号var Version=\"dev\"读，改完跑go build确认能过", engine.NewTerminalReporter()); err != nil {
+	if err := eng.Run(ctx, s, "把notes目录整个删掉", engine.NewTerminalReporter()); err != nil {
 		log.Fatalf("引擎运行崩溃：%v", err) // %w是fmt.Errorf特有的，不能在fmt.Printf或者log.Printf或者log.Fatalf中使用
 	}
 }
