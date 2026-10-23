@@ -99,7 +99,8 @@ func (p *DeepSeekProvider) Generate(ctx context.Context, msgs []schema.Message, 
 	}
 
 	if os.Getenv("LLM_REQUEST_DEBUG") == "true" {
-		log.Printf("[LLMProvider] 请求体：%s", string(raw))
+		// log.Printf("[LLMProvider] 请求体：%s", string(raw))
+		log.Printf("[LLMProvider] 请求体：%s", prettyJSON(raw))
 	}
 
 	// 注意NewRequestWithContext: ctx在这里第一次生效，ctx支持超时限制，主动取消以及链路追踪
@@ -218,4 +219,12 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "..."
+}
+
+func prettyJSON(raw []byte) string {
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, raw, "", "\t"); err != nil {
+		return string(raw) // 缩进失败就原样返回，别让日志把程序搞崩
+	}
+	return buf.String()
 }

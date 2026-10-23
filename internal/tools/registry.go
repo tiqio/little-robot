@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"little-robot/internal/schema"
 	"log"
+	"sort"
 )
 
 // 让工具可以插拔，并且BaseTool是所有具体工具必须实现的最小契约
@@ -41,9 +42,18 @@ func (r *registryImpl) Register(tool BaseTool) {
 }
 
 func (r *registryImpl) GetAvailableTools() []schema.ToolDefinition {
-	defs := make([]schema.ToolDefinition, 0, len(r.tools))
-	for _, t := range r.tools {
-		defs = append(defs, t.Definition())
+	names := make([]string, 0, len(r.tools))
+	for n := range r.tools {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	// defs := make([]schema.ToolDefinition, 0, len(r.tools))
+	defs := make([]schema.ToolDefinition, 0, len(names))
+	// for _, t := range r.tools {
+	for _, n := range names { // 先给names排个序，然后用name那工具，否则每次prompt都不同（DeepSeek的上下文缓存命中率下降（前缀变了），会多付钱）
+		// defs = append(defs, t.Definition())
+		defs = append(defs, r.tools[n].Definition())
 	}
 	return defs
 }

@@ -40,7 +40,7 @@ func (t *EditFileTool) Definition() schema.ToolDefinition {
 					"type":        "string",
 					"description": "文件中的原有文本，必须包含足够上下文以保持唯一",
 				},
-				"next_text": map[string]interface{}{
+				"new_text": map[string]interface{}{
 					"type":        "string",
 					"description": "替换后的新文本",
 				},
@@ -95,6 +95,11 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	// 用原文件的权限协会，可以防止把可执行脚本降级成0644
 	if err := os.WriteFile(full, []byte(newContent), info.Mode().Perm()); err != nil {
 		return "", fmt.Errorf("写回%q失败：%w", in.Path, err)
+	}
+
+	// 允许new_text为空（删代码是合法需求），但返回值必须说清楚
+	if in.NewText == "" {
+		return fmt.Sprintf("已修改%s：删除1处（新文本为空），文件从%d字节变为%d字节", in.Path, len(original), len(newContent)), nil
 	}
 
 	return fmt.Sprintf("已修改%s：替换1处，文件从%d字节，修改为%d字节", in.Path, len(original), len(newContent)), nil

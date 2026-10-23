@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"little-robot/internal/prompt"
 	"little-robot/internal/provider"
 	"little-robot/internal/schema"
 	"little-robot/internal/tools"
@@ -23,6 +24,7 @@ type AgentEngine struct {
 	registry       tools.Registry
 	WorkDir        string
 	EnableThinking bool // 注意这里是大写的，因为外部可以读写
+	composer       *prompt.Composer
 }
 
 // 构造函数
@@ -32,9 +34,11 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 		registry:       r,
 		WorkDir:        workDir,
 		EnableThinking: enableThinking,
+		composer:       prompt.NewComposer(workDir),
 	}
 }
 
+// 为什么要engine自己NewComposer而不是从外层注入？因为这样构造函数少一个参数，代价是engine和文件系统耦合了——要单测Run就得准备真实目录
 func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Reporter) error {
 	// 一处都低，后面就不用每个回调都判空；漏判一处就是panic
 	if reporter == nil {
@@ -44,11 +48,12 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Repor
 	log.Printf("[Engine] 引擎启动，工作区：%s\n", e.WorkDir)
 
 	history := []schema.Message{
-		{
-			Role: schema.RoleSystem,
-			// 这里的system prompt一个字都没有说什么情况下用哪个工具，所以相当于把4个工具告诉它随便用，解决方法是换成结构化的一段，或者在工具的Description里面进行限制
-			Content: "You are little-robot, an expert coding assistant. You have full access to tools in the workspace",
-		},
+		// {
+		// 	Role: schema.RoleSystem,
+		// 	// 这里的system prompt一个字都没有说什么情况下用哪个工具，所以相当于把4个工具告诉它随便用，解决方法是换成结构化的一段，或者在工具的Description里面进行限制
+		// 	Content: "You are little-robot, an expert coding assistant. You have full access to tools in the workspace",
+		// },
+		e.composer.Build(),
 		{
 			Role:    schema.RoleUser,
 			Content: userPrompt,
