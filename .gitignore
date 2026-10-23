@@ -3,3 +3,4 @@ robot.exe
 *.log
 .env
 /workspace/
+nul

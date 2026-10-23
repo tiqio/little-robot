@@ -42,7 +42,7 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 		WorkDir:        workDir,
 		EnableThinking: enableThinking,
 		composer:       prompt.NewComposer(workDir),
-		compactor:      session.NewCompactor(20000, 8),
+		compactor:      session.NewCompactor(200000, 36),
 		reminder:       NewReminder(),
 	}
 }

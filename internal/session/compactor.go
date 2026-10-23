@@ -57,7 +57,7 @@ func (c *Compactor) Compact(msgs []schema.Message) []schema.Message {
 		}
 
 		origLen := len(m.Content)
-		inWorkingMemory := i >= protectFrom
+		inWorkingMemory := i >= protectFrom // 在保护区里面的话就压得小一点，不在的话压的非常厉害，直接全部没掉了
 
 		// 工具结果：老的拆解，近的头尾保留
 		if m.Role == schema.RoleUser && m.ToolCallID != "" {
@@ -70,7 +70,8 @@ func (c *Compactor) Compact(msgs []schema.Message) []schema.Message {
 				// 保护区内太长：保留头500 + 尾500
 				// 头部通常是命令回显，尾部通常是报错信息，中间是可以牺牲的
 				// m.Content = m.Content[:500] + fmt.Sprintf("\n\n...[中间%d字节已截断]...\n\n", len(m.Content)-1000) + m.Content[len(m.Content)-500:]
-				m.Content = clipMiddle(m.Content, 500, 500)
+				// m.Content = clipMiddle(m.Content, 500, 500)
+				m.Content = clipMiddle(m.Content, 10000, 10000)
 			}
 		}
 

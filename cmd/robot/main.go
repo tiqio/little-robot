@@ -163,9 +163,18 @@ func main() {
 	registry.Register(tools.NewEditFileTool(workDir))
 	registry.Use(guard.Middleware(guard.NewTerminalApprover()))
 
+	// 子代理只能使用只读工具（注意这里没有write_file/edit_file/spawn_subagent）
+	subReg := tools.NewRegistry()
+	subReg.Register(tools.NewReadFileTool(workDir))
+	subReg.Register(tools.NewBashTool(workDir))
+	subReg.Use(guard.Middleware(guard.NewTerminalApprover()))
+
 	// eng := engine.NewAgentEngine(&mockProvider{}, &mockRegistry{}, workDir, true)
 	eng := engine.NewAgentEngine(p, registry, workDir, false)
-	// eng.PlanMode = true // 打开计划模式
+	eng.PlanMode = true // 打开计划模式
+
+	// 主注册表：在原有工具之外，多一个“派子代理”，但是这个时候需要eng来RunSub
+	registry.Register(tools.NewSubagentTool(eng, subReg))
 
 	// if err := eng.Run(context.Background(), "帮我检查当前目录的文件"); err != nil {
 	// if err := eng.Run(context.Background(), "北京今天天气怎么样？适合出去跑步吗？"); err != nil {
@@ -202,7 +211,10 @@ func main() {
 	*/
 
 	// if err := eng.Run(ctx, s, "给little-robot加一个/version子命令：cmd/robot支持-version参数打印版本号，版本好号var Version=\"dev\"读，改完跑go build确认能过", engine.NewTerminalReporter()); err != nil {
-	if err := eng.Run(ctx, s, "把notes目录整个删掉", engine.NewTerminalReporter()); err != nil {
+	// if err := eng.Run(ctx, s, "把notes目录整个删掉", engine.NewTerminalReporter()); err != nil {
+	if err := eng.Run(ctx, s, "找出项目里所有调用NewAgentEngine的位置，说明每一处是干什么的", engine.NewTerminalReporter()); err != nil {
 		log.Fatalf("引擎运行崩溃：%v", err) // %w是fmt.Errorf特有的，不能在fmt.Printf或者log.Printf或者log.Fatalf中使用
 	}
+
+	// tool:spawn_subagent 4621 -> 54：非常贵，为子代理付的钱，被自己的压缩器丢掉了
 }
