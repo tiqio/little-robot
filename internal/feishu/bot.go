@@ -3,16 +3,18 @@ package feishu
 import (
 	"context"
 	"encoding/json"
-	lark "github.com/larksuite/oapi-sdk-go/v3"
-	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
-	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
-	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 	"little-robot/internal/engine"
+	"little-robot/internal/session"
 	"log"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	lark "github.com/larksuite/oapi-sdk-go/v3"
+	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
+	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
+	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 )
 
 type Bot struct {
@@ -20,6 +22,7 @@ type Bot struct {
 	appSecret string
 	eng       *engine.AgentEngine
 	client    *lark.Client
+	sessions  *session.Manager
 
 	mu    sync.Mutex
 	seen  map[string]struct{}
@@ -32,6 +35,7 @@ func NewBot(appID, appSecret string, eng *engine.AgentEngine) *Bot {
 		appSecret: appSecret,
 		eng:       eng,
 		client:    lark.NewClient(appID, appSecret),
+		sessions:  session.NewManager(),
 		seen:      make(map[string]struct{}),
 		locks:     make(map[string]*sync.Mutex),
 	}
@@ -84,7 +88,10 @@ func (b *Bot) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) e
 		runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 
-		if err := b.eng.Run(runCtx, text, reporter); err != nil {
+		// 最小修法，bot里面建立一个共享会话（更好的做法是按照chatID分会话，每个用户共享记忆，但是这里先让它跑通）
+		// 现在改成了chatID，每个群一份记忆，写"feishu-default"会让A群的问题污染B群的答案"
+		sess := b.sessions.GetOrCreate(chatID, b.eng.WorkDir)
+		if err := b.eng.Run(runCtx, sess, text, reporter); err != nil {
 			log.Printf("[Feishu] 引擎出错：%v", err)
 			reporter.NotifyError(context.Background(), err)
 		}

@@ -6,6 +6,7 @@ import (
 	"little-robot/internal/engine"
 	"little-robot/internal/provider"
 	"little-robot/internal/schema"
+	"little-robot/internal/session"
 	"little-robot/internal/tools"
 	"log"
 	"os"
@@ -152,7 +153,28 @@ func main() {
 	//if err := eng.Run(context.Background(), "查看一下当前目录下面有哪些文件"); err != nil {
 	//if err := eng.Run(context.Background(), "帮我把notes/demo.md里的火改成风"); err != nil {
 	//if err := eng.Run(context.Background(), "请并行执行三条bash命令，sleep 2 && echo A，sleep 2 && echo B，sleep 2 && echo C，然后打印三个echo时的时间戳"); err != nil {
-	if err := eng.Run(context.Background(), "读取一下工作区里面的hello.txt，用一句话告诉我它写了什么", engine.NewTerminalReporter()); err != nil {
-		log.Fatalf("引擎运行崩溃：%v", err)
+	// if err := eng.Run(context.Background(), "读取一下工作区里面的hello.txt，用一句话告诉我它写了什么", engine.NewTerminalReporter()); err != nil {
+	// 	log.Fatalf("引擎运行崩溃：%v", err)
+	// }
+
+	ctx := context.Background()
+
+	sessions := session.NewManager()
+	s := sessions.GetOrCreate("local", workDir) // id=local，这样后面eng可以挂到这个上面
+	if err := eng.Run(ctx, s, "记住一件事：我叫阿伟，正在写little-robot这个Agent", nil); err != nil {
+		log.Fatalf("第一轮失败：%v", err)
 	}
+
+	log.Println("===== 第一轮结束，开始第二轮 =====")
+
+	if err := eng.Run(ctx, s, "我叫什么？我正在做什么？回答这两点", nil); err != nil {
+		log.Fatalf("第二轮失败：%v", err)
+	}
+
+	/*
+		三个真实的发现：
+		1. 模型自己发明了文件记忆：文件写进了.claw/memory/user.md混起来了，.claw/memory被看成了它给自己做的笔记
+		2. 记录时间：系统提示词里面没有当前日期，模型只能猜测
+		3. 为了记住一个名字花费了5轮，因为不是能力问题
+	*/
 }

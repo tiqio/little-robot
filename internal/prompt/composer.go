@@ -4,7 +4,9 @@ import (
 	"little-robot/internal/schema"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 )
 
 // 系统提示词是整个项目里投入产出比最高的一段字符串
@@ -18,6 +20,9 @@ const basePrompt = `# 身份
 4. 工具报错时读stderr，自己修正后重试，不要原样重复同一条命令
 5. 一次能说清的事不要分三次说
 6. 用中文回复
+7. 用户只是要求你记住信息的时候，直接确认，不探索工作区，不要写文件
+8. 不要自行创建“记忆文件”；需要落盘时等用户明确要求
+9. 一次任务最多8轮工具调用，超过就先汇报进展再继续
 `
 
 type Composer struct {
@@ -34,6 +39,10 @@ func NewComposer(workDir string) *Composer {
 func (c *Composer) Build() schema.Message {
 	var b strings.Builder
 	b.WriteString(basePrompt)
+
+	b.WriteString("\n# 环境\n")
+	b.WriteString("今天：" + time.Now().Format("2006-01-02") + "\n") // DeepSeek的上下文按照前缀匹配，如果每分钟都边就要按照全价付费
+	b.WriteString("操作系统：" + runtime.GOOS + "\n")
 
 	if raw, err := os.ReadFile(filepath.Join(c.workDir, "AGENTS.md")); err == nil {
 		b.WriteString("\n# 项目专属指南（来自AGENTS.md，必须遵守）\n```markdown\n")

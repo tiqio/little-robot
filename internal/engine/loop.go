@@ -6,10 +6,13 @@ import (
 	"little-robot/internal/prompt"
 	"little-robot/internal/provider"
 	"little-robot/internal/schema"
+	"little-robot/internal/session"
 	"little-robot/internal/tools"
 	"log"
 	"sync"
 )
+
+const maxTurns = 12
 
 /*
 	如何把call循环变成并发，需要注意哪些地方？
@@ -38,8 +41,92 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 	}
 }
 
+func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt string, reporter Reporter) error {
+	if s == nil {
+		return fmt.Errorf("session不能为nil")
+	}
+	if reporter == nil {
+		reporter = NewTerminalReporter()
+	}
+
+	log.Printf("[Engine] 会话 %s | 工作区 %s | 已有历史 %d 条", s.ID, e.WorkDir, s.Len())
+
+	// 用户这轮说的话给会话
+	s.Append(schema.Message{Role: schema.RoleUser, Content: userPrompt})
+
+	turn := 0
+	for {
+		turn++
+		if turn > maxTurns {
+			return fmt.Errorf("超过最大轮数%d，已终止", maxTurns)
+		}
+		log.Printf("===== [Turn %d] 开始 ====\n", turn)
+
+		availableTools := e.registry.GetAvailableTools()
+
+		// system每轮预算：改了AGENTS.md / 加了技能，下一轮就生效
+		history := append([]schema.Message{e.composer.Build()}, s.Messages()...) // 前一秒加进去的userPrompt现在在这里被返回
+
+		if e.EnableThinking {
+			log.Println("[Phase 1] 收走工具，进入规划阶段...")
+			reporter.OnThinkingStart(ctx)
+			thinkResp, err := e.provider.Generate(ctx, history, nil)
+			if err != nil {
+				return fmt.Errorf("思考阶段生成失败：%w", err)
+			}
+			if thinkResp.Content != "" {
+				reporter.OnThinkingText(ctx, thinkResp.Content)
+				s.Append(*thinkResp) // 注意这里同时维护了两个副本，session和history，history是为了包含systemPrompt和toolPrompt的：history是发给模型的快照，s是真实存档，让Phase2看到思考
+				history = append(history, *thinkResp)
+			}
+		}
+
+		log.Println("[Phase 2] 恢复工具，等待行动...")
+		resp, err := e.provider.Generate(ctx, history, availableTools)
+		if err != nil {
+			return fmt.Errorf("模型生成失败：%w", err)
+		}
+
+		s.Append(*resp)
+
+		if resp.Content != "" {
+			reporter.OnAssistantMessage(ctx, resp.Content)
+		}
+
+		if len(resp.ToolCalls) == 0 {
+			log.Printf("[Engine] 模型不再请求工具，任务完成，推出循环")
+			break
+		}
+
+		log.Printf("[Engine] 模型请求并发调用%d个工具...\n", len(resp.ToolCalls))
+
+		observationMsgs := make([]schema.Message, len(resp.ToolCalls))
+		var wg sync.WaitGroup
+
+		for i, call := range resp.ToolCalls {
+			wg.Add(1)
+			go func(idx int, c schema.ToolCall) {
+				defer wg.Done()
+				reporter.OnToolCall(ctx, c)
+				result := e.registry.Execute(ctx, c)
+				reporter.OnToolResult(ctx, c, result)
+				observationMsgs[idx] = schema.Message{
+					Role:       schema.RoleUser,
+					Content:    result.Output,
+					ToolCallID: c.ID,
+				}
+			}(i, call)
+		}
+		wg.Wait()
+
+		s.Append(observationMsgs...)
+	}
+
+	return nil
+}
+
 // 为什么要engine自己NewComposer而不是从外层注入？因为这样构造函数少一个参数，代价是engine和文件系统耦合了——要单测Run就得准备真实目录
-func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Reporter) error {
+func (e *AgentEngine) RunOnce(ctx context.Context, userPrompt string, reporter Reporter) error {
 	// 一处都低，后面就不用每个回调都判空；漏判一处就是panic
 	if reporter == nil {
 		reporter = NewTerminalReporter()
@@ -47,6 +134,18 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Repor
 
 	log.Printf("[Engine] 引擎启动，工作区：%s\n", e.WorkDir)
 
+	// 引擎现在是有状态的：后果是一次Run结束，历史就没有了，飞书上用户说下一个话，模型不知道之前聊过什么
+	/*
+		因此需要把历史从引擎里搬出去，放进Session：
+			1. 引擎：无状态（同时可以服务100个会话）
+			2. Session：有状态（每个会话自己的历史）
+		多轮会话，多用户隔离，断点回复（ch14），上下文压缩（ch12）全部建立在历史有个明确的归属上面
+
+		三个关键设计：
+			1. system消息不进Session：每一轮现算composer.Build()，这样改了AGENTS.md后下一轮会立刻生效
+			2. Messages()必须返回副本：Go的切片是引用，如果直接return s.history，调用方一个append就可能改会话内部
+			3. 引擎改成无状态，才能并发：引擎里面不能有任何当前会话的字段——WorkDir、provider、registry都是只读的，历史全在Session里面
+	*/
 	history := []schema.Message{
 		// {
 		// 	Role: schema.RoleSystem,
