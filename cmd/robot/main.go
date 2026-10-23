@@ -2,14 +2,16 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"log"
+	"os"
+
 	"little-robot/internal/config"
 	"little-robot/internal/engine"
 	"little-robot/internal/provider"
 	"little-robot/internal/schema"
 	"little-robot/internal/session"
 	"little-robot/internal/tools"
-	"log"
-	"os"
 )
 
 var (
@@ -111,6 +113,17 @@ func (m *mockRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
 }
 
 func main() {
+	// 命令行参数优先：-version / -h 必须在读 .env、校验 API Key 之前处理，
+	// 否则没配环境变量时连版本号都打不出来。
+	handled, err := handleArgs(os.Args[1:], os.Stdout, os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if handled {
+		return
+	}
+
 	// 使用自己的Provider
 	if err := config.LoadEnvFile(".env"); err != nil {
 		log.Printf("没有读到.env（%v），将只用系统环境变量", err)
@@ -145,6 +158,7 @@ func main() {
 
 	// eng := engine.NewAgentEngine(&mockProvider{}, &mockRegistry{}, workDir, true)
 	eng := engine.NewAgentEngine(p, registry, workDir, false)
+	eng.PlanMode = true // 打开计划模式
 
 	// if err := eng.Run(context.Background(), "帮我检查当前目录的文件"); err != nil {
 	// if err := eng.Run(context.Background(), "北京今天天气怎么样？适合出去跑步吗？"); err != nil {
@@ -161,15 +175,17 @@ func main() {
 
 	sessions := session.NewManager()
 	s := sessions.GetOrCreate("local", workDir) // id=local，这样后面eng可以挂到这个上面
-	if err := eng.Run(ctx, s, "记住一件事：我叫阿伟，正在写little-robot这个Agent", nil); err != nil {
-		log.Fatalf("第一轮失败：%v", err)
-	}
+	/*
+		if err := eng.Run(ctx, s, "记住一件事：我叫阿伟，正在写little-robot这个Agent", nil); err != nil {
+			log.Fatalf("第一轮失败：%v", err)
+		}
 
-	log.Println("===== 第一轮结束，开始第二轮 =====")
+		log.Println("===== 第一轮结束，开始第二轮 =====")
 
-	if err := eng.Run(ctx, s, "我叫什么？我正在做什么？回答这两点", nil); err != nil {
-		log.Fatalf("第二轮失败：%v", err)
-	}
+		if err := eng.Run(ctx, s, "我叫什么？我正在做什么？回答这两点", nil); err != nil {
+			log.Fatalf("第二轮失败：%v", err)
+		}
+	*/
 
 	/*
 		三个真实的发现：
@@ -177,4 +193,8 @@ func main() {
 		2. 记录时间：系统提示词里面没有当前日期，模型只能猜测
 		3. 为了记住一个名字花费了5轮，因为不是能力问题
 	*/
+
+	if err := eng.Run(ctx, s, "给little-robot加一个/version子命令：cmd/robot支持-version参数打印版本号，版本好号var Version=\"dev\"读，改完跑go build确认能过", engine.NewTerminalReporter()); err != nil {
+		log.Fatalf("引擎运行崩溃：%v", err) // %w是fmt.Errorf特有的，不能在fmt.Printf或者log.Printf或者log.Fatalf中使用
+	}
 }

@@ -9,10 +9,11 @@ import (
 	"little-robot/internal/session"
 	"little-robot/internal/tools"
 	"log"
+	"strings"
 	"sync"
 )
 
-const maxTurns = 12
+const maxTurns = 300
 
 /*
 	如何把call循环变成并发，需要注意哪些地方？
@@ -27,6 +28,7 @@ type AgentEngine struct {
 	registry       tools.Registry
 	WorkDir        string
 	EnableThinking bool // 注意这里是大写的，因为外部可以读写
+	PlanMode       bool
 	composer       *prompt.Composer
 	compactor      *session.Compactor
 }
@@ -67,10 +69,12 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 		availableTools := e.registry.GetAvailableTools()
 
 		// system每轮预算：改了AGENTS.md / 加了技能，下一轮就生效
-		history := append([]schema.Message{e.composer.Build()}, s.Messages()...) // 前一秒加进去的userPrompt现在在这里被返回
+		history := append([]schema.Message{e.composer.Build(e.PlanMode)}, s.Messages()...) // 前一秒加进去的userPrompt现在在这里被返回
 
 		// 发送请求前压缩：只换内容，不删除消息
 		history = e.compactor.Compact(history) // 位置很关键：必须在Generate之前，s.Append之后，压的是“发出去的快照”，不是会话本身
+
+		var thinking string
 
 		if e.EnableThinking {
 			log.Println("[Phase 1] 收走工具，进入规划阶段...")
@@ -81,7 +85,8 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 			}
 			if thinkResp.Content != "" {
 				reporter.OnThinkingText(ctx, thinkResp.Content)
-				s.Append(*thinkResp) // 注意这里同时维护了两个副本，session和history，history是为了包含systemPrompt和toolPrompt的：history是发给模型的快照，s是真实存档，让Phase2看到思考
+				thinking = thinkResp.Content
+				// s.Append(*thinkResp) // 注意这里同时维护了两个副本，session和history，history是为了包含systemPrompt和toolPrompt的：history是发给模型的快照，s是真实存档，让Phase2看到思考
 				history = append(history, *thinkResp)
 			}
 		}
@@ -92,7 +97,16 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 			return fmt.Errorf("模型生成失败：%w", err)
 		}
 
-		s.Append(*resp)
+		// s.Append(*resp)
+
+		// 关键：整个一轮只落一条assistant消息，OpenAI兼容协议要求角色交替（user——assistant——user——assistant），连续两个assistant，部分后端直接400
+		finalMsg := schema.Message{
+			Role:      schema.RoleAssistant,
+			Content:   strings.TrimSpace(thinking + "\n" + resp.Content),
+			ToolCalls: resp.ToolCalls,
+		}
+
+		s.Append(finalMsg)
 
 		if resp.Content != "" {
 			reporter.OnAssistantMessage(ctx, resp.Content)
@@ -157,7 +171,7 @@ func (e *AgentEngine) RunOnce(ctx context.Context, userPrompt string, reporter R
 		// 	// 这里的system prompt一个字都没有说什么情况下用哪个工具，所以相当于把4个工具告诉它随便用，解决方法是换成结构化的一段，或者在工具的Description里面进行限制
 		// 	Content: "You are little-robot, an expert coding assistant. You have full access to tools in the workspace",
 		// },
-		e.composer.Build(),
+		e.composer.Build(e.PlanMode),
 		{
 			Role:    schema.RoleUser,
 			Content: userPrompt,

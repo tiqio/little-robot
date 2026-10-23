@@ -25,6 +25,27 @@ const basePrompt = `# 身份
 9. 一次任务最多8轮工具调用，超过就先汇报进展再继续
 `
 
+// Plan Mode
+const planModePrompt = `
+# 长程任务强制规范（Plan Mode：ON）
+
+！！！你不能依赖短期记忆，所有架构思路和执行进度必须写入物理文件！！！
+
+**[STEP1：环境嗅探]**
+收到指令后，第一时间用run_command检查工作区是否存在PLAN.md和TODO.md
+- 分支A（全新任务）：两者不存在，先用write_file创建PLAN.md（理解、方案、技术选型），
+  再创建TODO.md（拆成可执行步骤，用 - []格式）
+- 分支B（断点续传）：两者已经存在，绝对不要覆盖！先用read_file读取PLAN.md了解全局目标，
+  再读TODO.md找到第一个未打勾的 - []，从那里继续
+
+**[STEP 2：单步执行，实时打勾]**
+每真正完成一个子任务，必须立刻用edit_file把TODO.md里面对应行改成- [X]
+不允许“全部写完最后统一打勾”
+
+**[STEP 3：迷失时自救]**
+报错或不知道下一步做什么时，立刻read_file重读TODO.md确认位置
+`
+
 type Composer struct {
 	workDir string
 }
@@ -36,9 +57,13 @@ func NewComposer(workDir string) *Composer {
 }
 
 // Build组装system消息：固定人设+AGENTS.md+Skills
-func (c *Composer) Build() schema.Message {
+func (c *Composer) Build(planMode bool) schema.Message {
 	var b strings.Builder
 	b.WriteString(basePrompt)
+
+	if planMode {
+		b.WriteString(planModePrompt)
+	}
 
 	b.WriteString("\n# 环境\n")
 	b.WriteString("今天：")
