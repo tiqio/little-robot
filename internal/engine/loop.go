@@ -31,6 +31,7 @@ type AgentEngine struct {
 	PlanMode       bool
 	composer       *prompt.Composer
 	compactor      *session.Compactor
+	reminder       *Reminder
 }
 
 // 构造函数
@@ -42,6 +43,7 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 		EnableThinking: enableThinking,
 		composer:       prompt.NewComposer(workDir),
 		compactor:      session.NewCompactor(20000, 8),
+		reminder:       NewReminder(),
 	}
 }
 
@@ -120,6 +122,8 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 		log.Printf("[Engine] 模型请求并发调用%d个工具...\n", len(resp.ToolCalls))
 
 		observationMsgs := make([]schema.Message, len(resp.ToolCalls))
+		// 需要保留一下这个results来看是不是会原地打转
+		results := make([]schema.ToolResult, len(resp.ToolCalls))
 		var wg sync.WaitGroup
 
 		for i, call := range resp.ToolCalls {
@@ -129,6 +133,8 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 				reporter.OnToolCall(ctx, c)
 				result := e.registry.Execute(ctx, c)
 				reporter.OnToolResult(ctx, c, result)
+
+				results[idx] = result
 				observationMsgs[idx] = schema.Message{
 					Role:       schema.RoleUser,
 					Content:    result.Output,
@@ -139,6 +145,10 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 		wg.Wait()
 
 		s.Append(observationMsgs...)
+
+		if nudge := e.reminder.Observe(resp.ToolCalls, results); nudge != nil {
+			s.Append(*nudge)
+		}
 	}
 
 	return nil
