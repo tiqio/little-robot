@@ -28,6 +28,7 @@ type AgentEngine struct {
 	WorkDir        string
 	EnableThinking bool // 注意这里是大写的，因为外部可以读写
 	composer       *prompt.Composer
+	compactor      *session.Compactor
 }
 
 // 构造函数
@@ -38,6 +39,7 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 		WorkDir:        workDir,
 		EnableThinking: enableThinking,
 		composer:       prompt.NewComposer(workDir),
+		compactor:      session.NewCompactor(20000, 8),
 	}
 }
 
@@ -66,6 +68,9 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 
 		// system每轮预算：改了AGENTS.md / 加了技能，下一轮就生效
 		history := append([]schema.Message{e.composer.Build()}, s.Messages()...) // 前一秒加进去的userPrompt现在在这里被返回
+
+		// 发送请求前压缩：只换内容，不删除消息
+		history = e.compactor.Compact(history) // 位置很关键：必须在Generate之前，s.Append之后，压的是“发出去的快照”，不是会话本身
 
 		if e.EnableThinking {
 			log.Println("[Phase 1] 收走工具，进入规划阶段...")

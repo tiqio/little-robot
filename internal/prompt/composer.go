@@ -11,7 +11,7 @@ import (
 
 // 系统提示词是整个项目里投入产出比最高的一段字符串
 const basePrompt = `# 身份
-你叫little-robot，一个极简的研发助手，你可以通过内置工具读取、创建、修改和执行工作区里的代码
+你叫little-robot, 一个极简的研发助手, 你可以通过内置工具读取、创建、修改和执行工作区里的代码
 
 # 纪律
 1. 判断文件是否存在，用run_command的dir或type，不要对目录调用read_file
@@ -41,8 +41,12 @@ func (c *Composer) Build() schema.Message {
 	b.WriteString(basePrompt)
 
 	b.WriteString("\n# 环境\n")
-	b.WriteString("今天：" + time.Now().Format("2006-01-02") + "\n") // DeepSeek的上下文按照前缀匹配，如果每分钟都边就要按照全价付费
-	b.WriteString("操作系统：" + runtime.GOOS + "\n")
+	b.WriteString("今天：")
+	b.WriteString(time.Now().Format("2006-01-02"))
+	b.WriteByte('\n') // DeepSeek的上下文按照前缀匹配，如果每分钟都边就要按照全价付费
+	b.WriteString("操作系统：")
+	b.WriteString(runtime.GOOS)
+	b.WriteByte('\n')
 
 	if raw, err := os.ReadFile(filepath.Join(c.workDir, "AGENTS.md")); err == nil {
 		b.WriteString("\n# 项目专属指南（来自AGENTS.md，必须遵守）\n```markdown\n")
