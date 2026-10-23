@@ -8,6 +8,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 )
 
 const maxSubTurns = 10
@@ -43,7 +44,9 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, reg tools.R
 
 		// 阈值20000~4个中等大小的Go文件，而子代理的本质工作就是一次读一堆文件，所以它注定在第一轮取证后就撞线，在每次出去时都会压缩，压缩是一次性爱管
 		// resp, err := e.provider.Generate(ctx, e.compactor.Compact(history), reg.GetAvailableTools())
-		resp, err := e.provider.Generate(ctx, history, reg.GetAvailableTools())
+		turnCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		resp, err := e.provider.Generate(turnCtx, history, reg.GetAvailableTools())
+		cancel()
 		if err != nil {
 			return "", fmt.Errorf("子代理推理失败：%w", err)
 		}

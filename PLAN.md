@@ -25,3 +25,19 @@
 | `robot -version` | 打印 `little-robot dev`，退出 0，**不读 .env、不建 engine** |
 | `robot -h` / 未知参数 | 打印用法到 stderr，退出 2 |
 | `robot`（无参数） | 保持原有行为 |
+
+---
+
+# PLAN（第二轮）：盘点 NewAgentEngine 的调用点
+
+## 需求理解
+- 只读探索任务：找出全仓库所有 `NewAgentEngine` 的调用位置，并说明每处用途。
+- 不改动任何代码，只输出结论。
+
+## 方案
+1. `grep -rn NewAgentEngine --include=*.go` 定位（同时看定义处，排除定义本身）。
+2. 逐个读上下文，判断：所属包 / 所在函数 / 传给谁 / 用途。
+3. 汇总成表格回复用户。
+
+## 约束
+- 遵守 AGENTS.md：不动 `internal/schema`，不改 `main.go` 业务逻辑（本任务纯只读）。

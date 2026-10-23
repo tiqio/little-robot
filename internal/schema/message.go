@@ -10,12 +10,26 @@ const (
 	RoleAssistant Role = "assistant"
 )
 
+// Usage 记录一次调用消耗的token，由provider填充；mock或老provider可以留nil
+type Usage struct {
+	// 修正原笔误：PromptToken -> PromptTokens，json tag 补复数
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+
+	// DeepSeek 缓存拆分明细：PromptTokens == CacheHitTokens + CacheMissTokens
+	// 其他厂商不返回时保持 0
+	CacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+	CacheMissTokens int `json:"prompt_cache_miss_tokens"`
+}
+
 // 所有人用，一条对话消息（系统的/用户的/模型的/工具结果的）
 type Message struct {
 	Role       Role       `json:"role"`
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"` // ToolCalls为空的时候不出现在JSON里面，ToolCallID为空的时候也不出现，发给模型的请求里面多一个"tool_calls": null，有些后端直接400
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Usage      *Usage     `json:"usage,omitempty"`
 }
 
 // 你给模型，”我有哪些工具，每个要什么参数“，user

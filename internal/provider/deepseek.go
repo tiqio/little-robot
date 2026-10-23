@@ -59,9 +59,11 @@ type chatResponse struct {
 		Message chatMessage `json:"message"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
+		PromptTokens          int `json:"prompt_tokens"`
+		CompletionTokens      int `json:"completion_tokens"`
+		TotalTokens           int `json:"total_tokens"`
+		PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+		PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
 	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
@@ -137,12 +139,20 @@ func (p *DeepSeekProvider) Generate(ctx context.Context, msgs []schema.Message, 
 		return nil, fmt.Errorf("响应里面没有choices")
 	}
 
-	log.Printf("[Provider] %s | tokens: prompt=%d completion=%d total=%d", p.model, parsed.Usage.PromptTokens, parsed.Usage.CompletionTokens, parsed.Usage.TotalTokens)
+	// 观测的活交给tracker，否则每次调用打两遍
+	//log.Printf("[Provider] %s | tokens: prompt=%d completion=%d total=%d", p.model, parsed.Usage.PromptTokens, parsed.Usage.CompletionTokens, parsed.Usage.TotalTokens)
 
 	m := parsed.Choices[0].Message
 	out := &schema.Message{
 		Role:    schema.RoleAssistant, // 返回的数据用RoleAssistant受理
 		Content: m.Content,
+	}
+	out.Usage = &schema.Usage{
+		PromptTokens:     parsed.Usage.PromptTokens,
+		CompletionTokens: parsed.Usage.CompletionTokens,
+		TotalTokens:      parsed.Usage.TotalTokens,
+		CacheHitTokens:   parsed.Usage.PromptCacheHitTokens,
+		CacheMissTokens:  parsed.Usage.PromptCacheMissTokens,
 	}
 
 	for _, tc := range m.ToolCalls {

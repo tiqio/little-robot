@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"little-robot/internal/observability"
 	"log"
 	"os"
+	"time"
 
 	"little-robot/internal/config"
 	"little-robot/internal/engine"
@@ -140,11 +142,19 @@ func main() {
 		log.Fatal("DEEPSEEK_API_KEY没有设置，检查.env")
 	}
 
+	baseURL := config.Get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+	modelName := config.Get("DEEPSEEK_MODEL", "deepseek-flash")
+
 	p := provider.NewDeepSeekProvider(
 		apiKey,
-		config.Get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-		config.Get("DEEPSEEK_MODEL", "deepseek-flash"),
+		baseURL,
+		modelName,
 	)
+
+	tracker := observability.NewCostTracker(p, modelName, observability.PriceForNow(time.Now()))
+	defer func() {
+		log.Println(tracker.Report())
+	}()
 
 	workDir, err := os.Getwd()
 	if err != nil {
@@ -170,7 +180,8 @@ func main() {
 	subReg.Use(guard.Middleware(guard.NewTerminalApprover()))
 
 	// eng := engine.NewAgentEngine(&mockProvider{}, &mockRegistry{}, workDir, true)
-	eng := engine.NewAgentEngine(p, registry, workDir, false)
+	//eng := engine.NewAgentEngine(p, registry, workDir, false)
+	eng := engine.NewAgentEngine(tracker, registry, workDir, false)
 	eng.PlanMode = true // 打开计划模式
 
 	// 主注册表：在原有工具之外，多一个“派子代理”，但是这个时候需要eng来RunSub
