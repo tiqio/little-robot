@@ -3,17 +3,18 @@ package main
 import (
 	"context"
 	"fmt"
+	"little-robot/internal/guard"
 	"little-robot/internal/observability"
+	"little-robot/internal/session"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	"little-robot/internal/config"
 	"little-robot/internal/engine"
-	"little-robot/internal/guard"
 	"little-robot/internal/provider"
 	"little-robot/internal/schema"
-	"little-robot/internal/session"
 	"little-robot/internal/tools"
 )
 
@@ -123,7 +124,7 @@ func (m *mockRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
 func main() {
 	// 命令行参数优先：-version / -h 必须在读 .env、校验 API Key 之前处理，
 	// 否则没配环境变量时连版本号都打不出来。
-	handled, err := handleArgs(os.Args[1:], os.Stdout, os.Stderr)
+	opts, handled, err := handleArgs(os.Args[1:], os.Stdout, os.Stderr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -156,15 +157,20 @@ func main() {
 		log.Println(tracker.Report())
 	}()
 
-	workDir, err := os.Getwd()
-	if err != nil {
-		log.Fatalf("拿不到工作目录：%v", err)
-	}
+	/*
+		workDir, err := os.Getwd()
+		if err != nil {
+			log.Fatalf("拿不到工作目录：%v", err)
+		}
+	*/
 
-	// TODO 1（大脑）：第 4 章接入真实的模型 Provider
-	// TODO 2（手脚）：第 5-8 章注册 read_file / write_file / bash / edit_file
-	// TODO 3（记忆）：第 10-13 章接入上下文管理与会话持久化
-	// TODO 4（心脏）：第 2 章用 engine.NewAgentEngine(...) 把上面三个接起来
+	workDir, err := filepath.Abs(opts.Dir) // 不能省，一定要绝对路径，否则后面resolvePath的沙箱判断会因为相对路径而失效
+	if err != nil {
+		log.Fatalf("解析工作区路径失败：%v", err)
+	}
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		log.Fatalf("创建工作区失败：%v", err)
+	}
 
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(workDir))
@@ -181,8 +187,8 @@ func main() {
 
 	// eng := engine.NewAgentEngine(&mockProvider{}, &mockRegistry{}, workDir, true)
 	//eng := engine.NewAgentEngine(p, registry, workDir, false)
-	eng := engine.NewAgentEngine(tracker, registry, workDir, false)
-	eng.PlanMode = true // 打开计划模式
+	eng := engine.NewAgentEngine(tracker, registry, workDir, opts.Think)
+	eng.PlanMode = opts.Plan // 打开计划模式
 
 	// 主注册表：在原有工具之外，多一个“派子代理”，但是这个时候需要eng来RunSub
 	registry.Register(tools.NewSubagentTool(eng, subReg))
@@ -198,10 +204,10 @@ func main() {
 	// 	log.Fatalf("引擎运行崩溃：%v", err)
 	// }
 
-	ctx := context.Background()
-
-	sessions := session.NewManager()
-	s := sessions.GetOrCreate("local", workDir) // id=local，这样后面eng可以挂到这个上面
+	//ctx := context.Background()
+	//
+	//sessions := session.NewManager()
+	//s := sessions.GetOrCreate("local", workDir) // id=local，这样后面eng可以挂到这个上面
 	/*
 		if err := eng.Run(ctx, s, "记住一件事：我叫阿伟，正在写little-robot这个Agent", nil); err != nil {
 			log.Fatalf("第一轮失败：%v", err)
@@ -223,9 +229,35 @@ func main() {
 
 	// if err := eng.Run(ctx, s, "给little-robot加一个/version子命令：cmd/robot支持-version参数打印版本号，版本好号var Version=\"dev\"读，改完跑go build确认能过", engine.NewTerminalReporter()); err != nil {
 	// if err := eng.Run(ctx, s, "把notes目录整个删掉", engine.NewTerminalReporter()); err != nil {
-	if err := eng.Run(ctx, s, "找出项目里所有调用NewAgentEngine的位置，说明每一处是干什么的", engine.NewTerminalReporter()); err != nil {
-		log.Fatalf("引擎运行崩溃：%v", err) // %w是fmt.Errorf特有的，不能在fmt.Printf或者log.Printf或者log.Fatalf中使用
-	}
+	//if err := eng.Run(ctx, s, "找出项目里所有调用NewAgentEngine的位置，说明每一处是干什么的", engine.NewTerminalReporter()); err != nil {
+	//	log.Fatalf("引擎运行崩溃：%v", err) // %w是fmt.Errorf特有的，不能在fmt.Printf或者log.Printf或者log.Fatalf中使用
+	//}
 
 	// tool:spawn_subagent 4621 -> 54：非常贵，为子代理付的钱，被自己的压缩器丢掉了
+
+	// 为什么给整个Run加30分钟超时？需要允许长程任务超时
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	// 会话持久化：同名-session会接着上次的历史继续
+	sessions := session.NewPersistentManager(filepath.Join(workDir, ".claw", "sessions"))
+	s := sessions.GetOrCreate(opts.SessionID, workDir) // workDir被用于恢复时覆盖session文件状态
+	if s.Len() > 0 {                                   // 看s.history有没有曾经的会话记录
+		log.Printf("[CLI] 恢复会话%q，已有历史%d条", s.ID, s.Len()) // 为什么Run出错用log.Printf？因为后面要保存会话，直接Fatal会让这次跑的全部上下午丢掉，下次没法续，先落盘，再退出
+	} else {
+		log.Printf("[CLI] 新会话%q", s.ID)
+	}
+
+	if err := eng.Run(ctx, s, opts.Prompt, engine.NewTerminalReporter()); err != nil {
+		log.Printf("引擎运行失败：%v", err)
+	}
+
+	// sessions的存储在引擎运行成功之后，可以保存会话，不在Session.Append里自动写是因为：
+	// 1. 没追加一条消息就写一次磁盘（IO放大） 2. 写失败没法处理 3. 并发写要额外加锁
+	// 所以：显式保存，时机由调用方决定——这是正确的分层
+	if path, err := sessions.Save(s); err != nil {
+		log.Printf("[CLI] 保存会话失败：%v", err)
+	} else if path != "" {
+		log.Printf("[CLI] 会话已保存：%s（历史%d条）", path, s.Len())
+	}
 }

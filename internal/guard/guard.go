@@ -33,7 +33,7 @@ var rules = []rule{
 
 // Check 判断这次调用是否危险，返回原因（给人和模型看）
 func Check(call schema.ToolCall) (bool, string) {
-	if call.Name != "bash" && call.Name != "run_command" {
+	if call.Name != "bash" {
 		return false, ""
 	}
 

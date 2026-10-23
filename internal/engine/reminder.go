@@ -81,7 +81,7 @@ func (r *Reminder) Observe(calls []schema.ToolCall, results []schema.ToolResult)
 %s
 
 立即停止这个重试，你的注意力被当前报错粘住了，接下来做其中一件事：
-1. 换一个完全不同的思路（先run_command的dir/ls看清环境，再动手）
+1. 换一个完全不同的思路（先bash的ls看清环境，再动手）
 2. 换一组不同的参数
 3. 如果确实做不到，直接停下并说明你缺什么，不要继续消耗调用次数`, worstCount, name, args),
 	}

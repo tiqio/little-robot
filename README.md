@@ -23,6 +23,26 @@ FEISHU_APP_SECRET=xxx
 ROBOT_WORKDIR=xxx (default=./workspace)
 ```
 
+### runner
+
+```
+go run ./cmd/robot -p "记住：代号蓝鲸，只回答收到" -dir /tmp/robot-demo -session demo
+go run ./cmd/robot -p "代号是什么？只回答代号" -dir /tmp/robot-demo -session demo
+
+rm -rf /tmp/robot-plan && go run ./cmd/robot \
+  -p "在 workspace 里创建 hello.txt 写入 hello world" \
+  -dir /tmp/robot-plan -session plan-demo
+  
+cat > /tmp/robot-plan/workspace/TODO.md <<'EOF'
+# TODO
+- [X] 创建 hello.txt
+- [ ] 写一个 README.md 说明这个目录
+EOF
+
+go run ./cmd/robot -p "继续" -dir /tmp/robot-plan -session plan-demo
+期望：它读TODO.md，从那个没打勾的开始干，而不是从头再来，这才是Plan Mode的真正价值——换进程、换事件、换人，都能接着干
+```
+
 ### robot
 
 机器人聊天窗口没有出现对话框（输入框）：应用机器人必须订阅接收消息事件，并且要开通 im:message.p2p_msg:readonly（读取用户发给机器人的单聊消息） 权限。
