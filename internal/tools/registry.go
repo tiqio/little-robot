@@ -105,10 +105,19 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 	out, err := tool.Execute(ctx, call.Arguments) // BaseTool只返回string和error，不反悔ToolResult，它不需要直到模型的存在
 	if err != nil {
 		span.Set("is_error", true)
-		// msg := hintFor(call.Name, msg) 增加固定引导词，但是没什么必要，直接返回失败就可以
+
+		// 原始报错保持不动，命中已知特征时在后面追加一句"该怎么改"
+		msg := fmt.Sprintf("执行%s失败：%v", call.Name, err)
+		if hint := hintFor(call.Name, msg); hint != "" {
+			span.Set("hint", "hit")
+			msg += "\n\n【系统救援指南】" + hint
+		} else {
+			span.Set("hint", "miss")
+		}
+
 		return schema.ToolResult{ // Registry层负责把error翻译成ToolResult{IsError: true}，交给模型看
 			ToolCallID: call.ID,
-			Output:     fmt.Sprintf("执行%s失败：%v", call.Name, err),
+			Output:     msg,
 			IsError:    true,
 		}
 	}
