@@ -43,6 +43,7 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 		registry:       r,
 		WorkDir:        workDir,
 		EnableThinking: enableThinking,
+		PlanMode:       false,
 		composer:       prompt.NewComposer(workDir),
 		compactor:      session.NewCompactor(200000, 36),
 		reminder:       NewReminder(),
@@ -96,7 +97,7 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 		var thinking string
 
 		if e.EnableThinking {
-			log.Println("[Phase 1] 收走工具，进入规划阶段...")
+			log.Println("[PLAN] 收走工具，进入规划阶段...")
 			reporter.OnThinkingStart(ctx)
 			thinkResp, err := e.provider.Generate(ctx, history, nil)
 			if err != nil {
@@ -110,7 +111,7 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 			}
 		}
 
-		log.Println("[Phase 2] 恢复工具，等待行动...")
+		//log.Println("[EXECUTE] 进入执行阶段...")
 		resp, err := e.provider.Generate(ctx, history, availableTools)
 		if err != nil {
 			return fmt.Errorf("模型生成失败：%w", err)
@@ -136,7 +137,10 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 			break
 		}
 
-		log.Printf("[Engine] 模型请求并发调用%d个工具...\n", len(resp.ToolCalls))
+		log.Printf("[Engine] 模型请求调用 %d 个工具：", len(resp.ToolCalls))
+		for i, c := range resp.ToolCalls {
+			log.Printf("  [%d] %s  %s", i, c.Name, previewArgs(c.Arguments, 160))
+		}
 
 		observationMsgs := make([]schema.Message, len(resp.ToolCalls))
 		// 需要保留一下这个results来看是不是会原地打转
@@ -162,6 +166,19 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 		wg.Wait()
 
 		s.Append(observationMsgs...)
+
+		// 工具产出的图片作为一条额外的 user 消息注入：厂商只允许 user 消息带图，
+		// 塞进 tool 消息会 400。模型看到图才能"先确认再发送"。
+		for _, r := range results {
+			if len(r.Images) == 0 {
+				continue
+			}
+			s.Append(schema.Message{
+				Role:    schema.RoleUser,
+				Content: "（系统注入）这是工具刚刚拿到的图片，请先看图判断是否符合要求，再决定发送还是换下一张。",
+				Images:  r.Images,
+			})
+		}
 
 		if nudge := e.reminder.Observe(resp.ToolCalls, results); nudge != nil {
 			s.Append(*nudge)
@@ -307,4 +324,14 @@ func (e *AgentEngine) RunOnce(ctx context.Context, userPrompt string, reporter R
 	}
 
 	return nil
+}
+
+// previewArgs 把一行 JSON 压成单行并截断，避免把 write_file 的整篇内容打到终端
+func previewArgs(raw []byte, max int) string {
+	s := strings.Join(strings.Fields(string(raw)), " ") // 压缩换行和多余空格
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + fmt.Sprintf("…（共%d字节）", len(s))
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"little-robot/internal/netutil"
 	"little-robot/internal/schema"
 	"os"
 	"os/exec"
@@ -132,6 +133,18 @@ func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 
 	cmd := t.command(timeoutCtx, in.Command)
 	cmd.Dir = t.workDir // 把当前cmd的执行滴滴放到workDir上面
+
+	// 把探测器找到的代理显式传给子进程：
+	// netutil 的代理探测只作用于程序自己发的请求，bash 里的 curl/wget 完全不知道，
+	// 不传就会走直连（有些网络下直接失败）。
+	if proxy := netutil.Proxy(); proxy != nil {
+		p := proxy.String()
+		cmd.Env = append(os.Environ(),
+			"HTTP_PROXY="+p, "http_proxy="+p,
+			"HTTPS_PROXY="+p, "https_proxy="+p,
+			"ALL_PROXY="+p, "all_proxy="+p,
+		)
+	}
 
 	// CombinedOutput把stdout和stderr混在一起，因为编译错误全在stderr上面
 	out, err := cmd.CombinedOutput()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"little-robot/internal/engine"
 	"little-robot/internal/session"
+	"little-robot/internal/tools"
 	"log"
 	"regexp"
 	"strings"
@@ -95,6 +96,9 @@ func (b *Bot) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) e
 		defer lock.Unlock()
 		runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
+
+		// 把本次运行的 sender 放进 ctx：send_image 工具靠它知道"回复哪条消息"
+		runCtx = tools.WithImageSender(runCtx, reporter)
 
 		// 最小修法，bot里面建立一个共享会话（更好的做法是按照chatID分会话，每个用户共享记忆，但是这里先让它跑通）
 		// 现在改成了chatID，每个群一份记忆，写"feishu-default"会让A群的问题污染B群的答案"

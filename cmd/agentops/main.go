@@ -41,6 +41,9 @@ func main() {
 	registry.Register(tools.NewWriteFileTool(workDir))
 	registry.Register(tools.NewEditFileTool(workDir))
 	registry.Register(tools.NewBashTool(workDir))
+	registry.Register(tools.NewSendImageTool(workDir))
+	registry.Register(tools.NewImageTool(workDir, os.Getenv("PEXELS_API_KEY")))
+	registry.Register(tools.NewViewImageTool(workDir))
 	registry.Use(guard.Middleware(&guard.DenyApprover{}))
 
 	// 4. 子代理只用只读工具
@@ -51,7 +54,7 @@ func main() {
 
 	// 5. 心脏
 	eng := engine.NewAgentEngine(tracker, registry, workDir, false)
-	eng.PlanMode = true
+	//eng.PlanMode = true
 	registry.Register(tools.NewSubagentTool(eng, subReg))
 
 	// 6. 会话：落在workspace/.claw/sessions，重启也不丢失

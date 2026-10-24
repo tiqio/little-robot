@@ -40,21 +40,36 @@ func (s *Session) Save(dir string) (string, error) {
 		return "", fmt.Errorf("创建会话目录失败：%w", err)
 	}
 
-	// 快照：读的时候要持锁，而且只拷贝切片头
+	// 快照：读的时候要持锁，拷完立刻放锁，别把几百毫秒的序列化留在锁里
 	s.mu.RLock()
+	hist := make([]schema.Message, len(s.history))
+	copy(hist, s.history)
+	s.mu.RUnlock()
+
+	// 落盘前剥掉图片：data URL 是 base64，一张 300KB 的图能让会话文件涨到 400KB；
+	// 更麻烦的是——下次加载后它会被重新发给模型，每轮都按图片计费。
+	// 保留一句文字说明，让模型知道"当时看过图"，而不是完全断片。
+	for i := range hist {
+		if len(hist[i].Images) == 0 {
+			continue
+		}
+		n := len(hist[i].Images)
+		hist[i].Images = nil
+		note := fmt.Sprintf("（此处查看过 %d 张图片，已省略图片内容）", n)
+		if strings.TrimSpace(hist[i].Content) == "" {
+			hist[i].Content = note
+		} else {
+			hist[i].Content += "\n" + note
+		}
+	}
+
 	snap := fileFormat{
 		ID:        s.ID,
 		WorkDir:   s.WorkDir,
 		CreatedAt: s.CreatedAt,
 		UpdatedAt: s.UpdatedAt,
-		History:   append([]schema.Message(nil), s.history...),
-		/*
-			append([]T(nil), src...)   // 复制一份，独立底层数组；空时是 nil
-			make([]T, len(src)); copy  // 同上，更清楚；空时是 []（推荐）
-			src[:]                     // [X] 没复制，共享内存，并发下会出事
-		*/
+		History:   hist,
 	}
-	s.mu.RUnlock()
 
 	b, err := json.MarshalIndent(snap, "", " ")
 	if err != nil {

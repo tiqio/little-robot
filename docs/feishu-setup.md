@@ -9,13 +9,34 @@
 
 ---
 
-## 0. 前置概念：三个名词
+## 0. 前置概念：五个名词
 
 | 名词 | 是什么 | 在你的项目里 |
 |---|---|---|
 | **自建应用**（Custom App） | 建在某个“企业/组织”下的应用，仅该组织内可用 | `测试智能体LITTLE-ROBOT` |
 | **企业/组织**（tenant） | 飞书里的一级组织，个人也能免费创建 | `ddcompany` |
 | **长连接**（WebSocket） | 你的进程主动连飞书，飞书把事件推过来 | 不需要公网 IP / 域名 / 内网穿透 |
+| **权限**（scope） | 你**能做什么**（读消息 / 发消息 / 读群信息） | `im:message.group_msg` 等 5 条 |
+| **事件订阅**（event） | 飞书**推什么给你** | `im.message.receive_v1` |
+
+### 三个开关的关系（最容易搞混）
+
+```
+权限 scope    → 你能读写什么
+事件订阅       → 飞书把什么推到你的长连接
+发布版本       → 以上配置什么时候生效
+```
+
+**三者缺一不可，而且每次改配置都要重新发版。** 这是后面所有坑的总根源。
+
+### 应用身份 vs 用户身份
+
+| 身份 | 凭证 | 适用场景 |
+|---|---|---|
+| **应用身份** | `tenant_access_token` | 无人值守：机器人自己干活 ← **本项目全部用这个** |
+| 用户身份 | `user_access_token` | 需要真人登录授权，代表他操作 |
+
+权限管理页右上角有两个 tab，**别在用户身份下开权限**——开了也用不上，还会让排查变复杂。
 
 ⚠️ 个人开发者**可以**走完全程：用手机号注册 → 创建一个免费团队（哪怕只有你一个人）→ 你就是管理员 → 可以建应用、开权限、自己审批发布。**不需要营业执照**（只有“对外部租户发消息”“上架应用商店”这类能力才要企业认证）。
 
@@ -40,27 +61,55 @@
 
 - [ ] 「添加应用能力」→ **机器人** → 添加 / 启用
 
-### 1.4 开权限（**4 条，缺一不可**）
+### 1.4 开权限（**5 条，分三层**）
 
 「权限管理」→「开通权限」→ 按**中文名称**搜索（按 code 搜反而不准）→ 勾选 →「确认开通权限」。
+⚠️ 页面右上角有两个 tab，**确认自己在「应用身份权限」下**。
+
+#### 第一层：底座（缺了整个机器人跑不起来）
 
 | # | 权限 code | 名称 | 不开会怎样 |
 |---|---|---|---|
-| 1 | `im:message` | 获取与发送单聊、群组消息 | 收发全不通 |
-| 2 | `im:message.p2p_msg:readonly` | **读取用户发给机器人的单聊消息** | **单聊没有输入框、收不到消息** ← 最容易漏 |
-| 3 | `im:message.group_at_msg:include_bot:readonly` | 获取群组中其他机器人和用户@当前机器人的消息 | 群里 @ 也收不到 |
-| 4 | `im:message:send_as_bot` | 以应用的身份发消息 | 能收不能回 |
+| 1 | `im:message` | 获取与发送单聊、群组消息 | 消息收发全不通（历史总括权限，留着别删） |
+| 2 | `im:message:send_as_bot` | 以应用的身份发消息 | 能收不能回 |
 
-> **为什么第 2 条容易漏**：添加「接收消息」事件时，飞书只会自动帮你补第 3 条（群内 @）。
+#### 第二层：收消息的入口（按场景一条条加）
+
+| # | 权限 code | 名称 | 对应场景 |
+|---|---|---|---|
+| 3 | `im:message.p2p_msg:readonly` | **读取用户发给机器人的单聊消息** | 单聊 |
+| 4 | `im:message.group_at_msg:include_bot:readonly` | 获取群组中其他机器人和用户@当前机器人的消息 | 群里 @ 它 |
+
+> **为什么第 3 条最容易漏**：添加「接收消息」事件时，飞书只会自动帮你补第 4 条（群内 @）。
 > 单聊需要的 `p2p_msg:readonly` 不会自动加，而缺了它，**单聊窗口连对话框都不给**。
-> 官方 FAQ 明确写了这一条：<https://open.feishu.cn/document/faq/bot.md>
+> 官方 FAQ：<https://open.feishu.cn/document/faq/bot.md>
+
+#### 第三层：功能权限（可选，按体验需求加）
+
+| # | 权限 code | 名称 | 对应场景 |
+|---|---|---|---|
+| 5 | `im:message.group_msg` | 获取**群组中所有消息**（**敏感权限**） | 群里**不 @** 也响应 |
+
+> **敏感在哪**：它让应用能读到群里的全部聊天记录，哪怕没 @ 它。商店应用上架时大概率被驳回；自建应用 + 免审团队一般能一键开通。
+>
+> **为什么不用 `group_msg:include_bot:readonly`**：那条会连**机器人自己发的消息**一起推，容易形成自触发循环。用 `group_msg` 天然避开了这个坑。
+
+#### 三条路线，按需选
+
+| 你想要的效果 | 需要的权限 | 条数 |
+|---|---|---|
+| 只能单聊 | 1 + 2 + 3 | 3 |
+| 单聊 + 群里 @ | 1 + 2 + 3 + 4 | 4 |
+| 单聊 + 群里不 @ 也回 | 1 + 2 + 3 + 4 + 5 | 5 |
 
 ### 1.5 事件订阅（必须点保存）
 
 - [ ] 「事件与回调」→ 事件配置 → 订阅方式选 **使用长连接接收事件**
 - [ ] **点「保存」**（不保存，下面的「添加事件」按钮永远是灰的）
 - [ ] 「添加事件」→ 搜「接收消息」→ 勾 `im.message.receive_v1` → 添加
-- [ ] 弹窗提示「推荐开通以下权限」→ 点**确认开通权限**
+- [ ] 弹窗提示「推荐开通以下权限」→ 点**确认开通权限**（会补上第 4 条）
+
+> `group_msg` 不需要新增事件，它只是让**同一个** `im.message.receive_v1` 推得更多。
 
 ### 1.6 发布版本（不发布 = 前面全白配）
 
@@ -69,6 +118,8 @@
 
 > ⚠️ **铁律：每次改权限 / 改事件 / 改机器人配置，都要重新发一版。**
 > 这是「明明配了却不生效」的头号原因，占所有排查的一半。
+> 本次实测：补 `group_msg` 后发了 1.0.2，下一条群消息才按新规则推送。
+
 
 ### 1.7 拿凭证写 .env
 
@@ -85,9 +136,35 @@ FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 ### 1.8 把机器人拉进会话
 
-- [ ] **单聊**：工作台 → 点应用图标 → 直接进单聊（任何文本都能收到）
-- [ ] **群聊**：群里加机器人 → **必须 @ 它** 才会推事件
-- [ ] 单聊不需要 @；群聊必须 @
+- [ ] **单聊**：工作台 → 点应用图标 → 直接进单聊（任何文本都能收到，不用 @）
+- [ ] **群聊**：群里加机器人。默认**必须 @ 它**才会推事件；开了 `group_msg` 后不 @ 也推
+- [ ] 单聊不需要 @
+
+### 1.9 群聊到底要不要 @（开了 `group_msg` 之后）
+
+| 模式 | 需要 `group_msg` | 体验 | 代价 |
+|---|---|---|---|
+| 群里 @ 它 | ❌ | 每次多按两个键 | 无 |
+| 群里不 @ 也回 | ✅ | 像真人一样接话 | **群里每条消息都触发一次 LLM 调用** |
+
+开了 `group_msg` 之后会立刻出现两个新问题：
+
+**① 成本**：群里一句“中午吃啥”也会走一次完整上下文（system prompt + 历史，几千 token）。活跃群一天几十块很正常。
+
+**② 刷屏**：它会对闲聊认真作答，群里会很尴尬。
+
+**不会自触发循环**——`group_msg` 不包含机器人自己发的消息（那个要 `group_msg:include_bot:readonly`，别开）。
+
+建议的最小防护（不做内容过滤，只限制生效范围）：
+
+```go
+// internal/feishu/bot.go 的 onMessage 里
+if deref(msg.ChatType) == "group" && chatID != os.Getenv("AGENTOPS_CHAT_ID") {
+	return nil
+}
+```
+
+`.env` 里填上那个群的 `oc_xxx`（终端日志 `[Feishu] 收到消息 chat=oc_xxx` 里就有）。
 
 ---
 
@@ -98,7 +175,10 @@ FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | `internal/engine/reporter.go` | 定义 `Reporter` 接口：引擎只发事件，不管展示 | engine 不依赖任何外壳 |
 | `internal/feishu/reporter.go` | 实现 `Reporter`，把事件变成飞书消息 | feishu → engine |
 | `internal/feishu/bot.go` | 收事件 → 去重 → 会话串行 → 后台跑 `eng.Run` | feishu → engine |
-| `cmd/bot/main.go` | 组合根：读 env、装配 engine / registry、启动长连接 | 同时认识两边 |
+| `internal/guard/deny.go` | 无人值守审批器：高危操作一律拒绝 | guard → tools |
+| `internal/session/store.go` | 会话落盘 `.claw/sessions/<id>.json`，支持断点续传 | session |
+| `cmd/bot/main.go` | **最小示例**：只有 provider + 四个工具 | 同时认识两边 |
+| `cmd/agentops/main.go` | **生产形态**：tracker + guard + 子代理 + 持久会话 | 同时认识两边 |
 
 ### 四个必须处理的工程点
 
@@ -106,6 +186,17 @@ FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 2. **handler 立刻返回**：只在 handler 里登记 + 起 goroutine，不要同步跑 Agent（长连接 SDK 是串行处理的，堵住会积压）；
 3. **同一会话串行**：每个 `chat_id` 一把 `sync.Mutex`，忙时回「稍后再发」，避免两个任务同时改同一个工作区；
 4. **不继承 handler 的 ctx**：goroutine 里用 `context.Background()` + 自己的超时，否则 handler 一返回 ctx 被取消，任务半路崩。
+
+### 审批器必须跟着场景换
+
+| 场景 | Approver | 理由 |
+|---|---|---|
+| 终端（`cmd/robot`） | `TerminalApprover` | 人在键盘前，能当场回答 |
+| 飞书（`cmd/agentops`） | `DenyApprover` | 无人值守，`TerminalApprover` 会永久阻塞在 `os.Stdin` |
+| 评测（`cmd/bench`） | 不挂 guard | 无人值守且命令都是自己写的 |
+
+**同一个 `guard.Middleware`，三种策略**——这就是 `Approver` 接口存在的意义。
+
 
 ---
 
@@ -142,7 +233,7 @@ go run ./cmd/bot
 
 ---
 
-## 4. 七个坑
+## 4. 十个坑
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
@@ -153,6 +244,9 @@ go run ./cmd/bot
 | 消息时有时无 | 同时起了两个 bot 进程，抢同一条长连接 | 只留一个进程 |
 | 事件日志「暂无查询结果」 | 飞书没推 | 回到权限 / 事件 / 版本三项 |
 | 改了 `.env` 不生效 | 环境变量在进程启动时读入，`os.Getenv` 不重读文件 | **重启进程** |
+| 开了 `group_msg` 后群里每句话都在烧钱 | 群消息全量推送 | 加 `AGENTOPS_CHAT_ID` 白名单，或退回「只 @ 模式」 |
+| 机器人对闲聊认真作答、刷屏 | 全量模式没有意图判断 | 同上；或改用关键词前缀（`robot:`） |
+| 机器人回复自己、无限循环 | 开了 `group_msg:include_bot:readonly` | 改回 `group_msg`（不含机器人消息） |
 
 ### 一个隐蔽的坑：`content` 必须是合法 JSON
 
@@ -421,8 +515,33 @@ curl -s -X POST "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type
 
 | 增强 | 说明 | 对应章节 |
 |---|---|---|
-| 卡片按钮审批 | 高危 `bash` 前弹「✅ 执行 / ❌ 取消」 | ch16 |
+| 卡片按钮审批 | 高危 `bash` 前弹「✅ 执行 / ❌ 取消」，代替 `DenyApprover` 的一刀切 | ch16 |
 | 主动推送 | `Im.Message.Create` + 定时器，定时汇报 | — |
-| 会话记忆 | 按 `chat_id` 存 `Session`，否则每条消息都是新对话 | ch11 |
-| 上下文压缩 | 有记忆后必须压缩，否则 token 爆炸 | ch12 |
-| 图片/文件消息 | 处理 `message_type` 为 `image`/`file` 的事件 | — |
+| 会话记忆 | ✅ 已实现：`session.NewPersistentManager` + `Bot.UseSessions` | ch11 / ch21 |
+| 上下文压缩 | ✅ 已实现：`session.NewCompactor` | ch12 |
+| 成本总账 | `tracker.Report()` 目前只在退出时打日志，可加 `/cost` 指令或每日推送 | ch18 |
+| 图片/文件消息 | 处理 `message_type` 为 `image`/`file` 的事件（还需 `im:resource` 权限下载） | — |
+| 群白名单 | `AGENTOPS_CHAT_ID` 限定生效范围，见 §1.9 | — |
+
+## 8. 权限速查（本项目实测结果）
+
+当前应用（`cli_aa50ac247d789be1`）已开通 5 条，全部为**应用身份**：
+
+```
+im:message
+im:message:send_as_bot
+im:message.p2p_msg:readonly
+im:message.group_at_msg.include_bot:readonly
+im:message.group_msg                        ← 敏感权限，为了「群里不 @ 也响应」
+```
+
+没开、按需再补：
+
+| 权限 | 用途 | 缺失时的表现 |
+|---|---|---|
+| `im:chat:readonly` | 列群、查群信息 | 调 `/im/v1/chats` 报 `99991672` |
+| `im:resource` | 下载消息里的图片/文件 | 图片消息只拿到 `file_key`，读不到内容 |
+| `contact:user.base:readonly` | 查用户姓名/部门 | 只能用 open_id 称呼人 |
+
+> `99991672` 的含义是「缺 scope」，飞书会把需要的权限名一起返回，照着去开 + **重新发版**。
+

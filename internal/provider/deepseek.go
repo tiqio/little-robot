@@ -19,10 +19,31 @@ var _ LLMProvider = &DeepSeekProvider{}
 // ===== 线格式（DeepSeek/OpenAI兼容协议）=====
 
 type chatMessage struct {
-	Role       string         `json:"role"`
-	Content    string         `json:"content,omitempty"`
+	Role string `json:"role"`
+	// Content 既可能是 string，也可能是 []contentBlock（带图时）
+	Content    any            `json:"content,omitempty"`
 	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
+}
+
+// contentBlock 对应 OpenAI 兼容的多段 content
+type contentBlock struct {
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *imageURL `json:"image_url,omitempty"`
+}
+
+type imageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// chatResponseMessage 是响应里的 assistant 消息：content 一定是字符串，
+// 不能复用请求侧的 chatMessage（那边 Content 可能是数组）
+type chatResponseMessage struct {
+	Role      string         `json:"role"`
+	Content   string         `json:"content"`
+	ToolCalls []chatToolCall `json:"tool_calls"`
 }
 
 type chatToolCall struct {
@@ -56,7 +77,7 @@ type chatRequest struct {
 
 type chatResponse struct {
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message chatResponseMessage `json:"message"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens          int `json:"prompt_tokens"`
@@ -178,8 +199,23 @@ func toChatMessages(msgs []schema.Message) []chatMessage {
 	out := make([]chatMessage, 0, len(msgs))
 	for _, m := range msgs {
 		cm := chatMessage{
-			Role:    string(m.Role),
-			Content: m.Content,
+			Role: string(m.Role),
+		}
+		// 带图且是 user 消息 → content 用数组；否则保持字符串（前缀缓存更稳）
+		if len(m.Images) > 0 && m.Role == schema.RoleUser {
+			blocks := make([]contentBlock, 0, len(m.Images)+1)
+			if strings.TrimSpace(m.Content) != "" {
+				blocks = append(blocks, contentBlock{Type: "text", Text: m.Content})
+			}
+			for _, img := range m.Images {
+				blocks = append(blocks, contentBlock{
+					Type:     "image_url",
+					ImageURL: &imageURL{URL: img, Detail: "auto"},
+				})
+			}
+			cm.Content = blocks
+		} else {
+			cm.Content = m.Content
 		}
 		switch m.Role {
 		case schema.RoleUser:

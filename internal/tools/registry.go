@@ -101,6 +101,7 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 		}
 	}
 
+	ctx, box := withImageCarrier(ctx)             // 工具通过它把产出的图片带回来
 	out, err := tool.Execute(ctx, call.Arguments) // BaseTool只返回string和error，不反悔ToolResult，它不需要直到模型的存在
 	if err != nil {
 		span.Set("is_error", true)
@@ -118,5 +119,6 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 	return schema.ToolResult{
 		ToolCallID: call.ID,
 		Output:     out,
+		Images:     *box,
 	}
 }

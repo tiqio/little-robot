@@ -30,6 +30,10 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"` // ToolCalls为空的时候不出现在JSON里面，ToolCallID为空的时候也不出现，发给模型的请求里面多一个"tool_calls": null，有些后端直接400
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Usage      *Usage     `json:"usage,omitempty"`
+
+	// Images 只用于 user 消息：data URL 形式（data:image/jpeg;base64,...）
+	// 厂商只接受 user 角色带图，system/assistant 带图会 400
+	Images []string `json:"images,omitempty"`
 }
 
 // 你给模型，”我有哪些工具，每个要什么参数“，user
@@ -51,4 +55,8 @@ type ToolResult struct {
 	ToolCallID string `json:"tool_call_id"`
 	Output     string `json:"output"`
 	IsError    bool   `json:"is_error"`
+
+	// Images：工具产生的图片（data URL），engine 会把它作为一条额外的 user 消息注入，
+	// 让模型"看见"结果。厂商只允许 user 消息带图，所以不能塞在 tool 消息里。
+	Images []string `json:"images,omitempty"`
 }
