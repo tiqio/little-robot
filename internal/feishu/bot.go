@@ -35,9 +35,17 @@ func NewBot(appID, appSecret string, eng *engine.AgentEngine) *Bot {
 		appSecret: appSecret,
 		eng:       eng,
 		client:    lark.NewClient(appID, appSecret),
-		sessions:  session.NewManager(),
+		sessions:  session.NewManager(), // 默认不落盘，兼容旧行为
 		seen:      make(map[string]struct{}),
 		locks:     make(map[string]*sync.Mutex),
+	}
+}
+
+// UseSessions 允许调用方注入持久化管理器（飞书多轮会话需要跨进程记忆）
+// 为什么不改NewBot的签名？一改就破坏所有调用方（虽然现在只有cmd/bot），加一个可选的setter是兼容性成本最低的做法，等确定永远需要持久化，再把参数挪近构造函数
+func (b *Bot) UseSessions(m *session.Manager) {
+	if m != nil {
+		b.sessions = m
 	}
 }
 
