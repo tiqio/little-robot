@@ -18,6 +18,28 @@ import (
 
 const maxTurns = 300
 
+// maxEmptyNudges：模型"没说话也没调工具"时最多救援几次。
+// 思考型模型会把输出额度全花在 reasoning 上，finish_reason=length 时 content 是空的；
+// 之前这种情况被当成"任务完成"直接收尾，用户在飞书看到一片空白。
+const maxEmptyNudges = 2
+
+// silentTurn 判断这一轮是不是"空输出"（没说话也没调工具）
+func silentTurn(resp *schema.Message) bool {
+	return len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Content) == ""
+}
+
+// emptyNudge 救援文案：把"该怎么改"直接写给模型（和 hintFor 同一个套路）
+func emptyNudge(finishReason string) string {
+	nudge := "（系统救援）你上一轮没有可见输出、也没调工具"
+	if finishReason == "length" {
+		nudge += "（思考把输出额度用光了）"
+	}
+	return nudge + "。这一轮把思考收短（100字以内），然后直接调一个工具或给结论，别重复上一轮的纠结。"
+}
+
+// silentFallback 两次救援后还是没话：给用户一句话，别让人干等空白
+const silentFallback = "（我想了很久没想出结果。换个问法再试试？或者直接告诉我你要哪个。）"
+
 /*
 	如何把call循环变成并发，需要注意哪些地方？
 	1. history不能在goroutine里面append：这样会竞争，因此需要收集到一个局部切片，WaitGroup等齐了，再一次性append进history
@@ -120,6 +142,7 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 	s.Append(schema.Message{Role: schema.RoleUser, Content: userPrompt})
 
 	turn := 0
+	emptyNudges := 0
 	for {
 		turn++
 		if turn > maxTurns {
@@ -174,6 +197,17 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 		}
 
 		if len(resp.ToolCalls) == 0 {
+			// 空输出救援：模型只思考没输出（length=额度被思考吃光 / stop=自己沉默），
+			// 不能直接当"任务完成"收尾，否则用户端一片空白
+			if silentTurn(resp) && emptyNudges < maxEmptyNudges {
+				emptyNudges++
+				log.Printf("[Engine] 空输出救援 %d/%d（finish_reason=%s）", emptyNudges, maxEmptyNudges, resp.FinishReason)
+				s.Append(schema.Message{Role: schema.RoleUser, Content: emptyNudge(resp.FinishReason)})
+				continue
+			}
+			if silentTurn(resp) {
+				reporter.OnAssistantMessage(ctx, silentFallback)
+			}
 			log.Printf("[Engine] 模型不再请求工具，任务完成，推出循环")
 			break
 		}
@@ -265,6 +299,7 @@ func (e *AgentEngine) RunOnce(ctx context.Context, userPrompt string, reporter R
 	}
 
 	turn := 0
+	emptyNudges := 0
 	for {
 		turn++
 		log.Printf("===== [Turn %d] 开始 =====\n", turn)
@@ -301,6 +336,16 @@ func (e *AgentEngine) RunOnce(ctx context.Context, userPrompt string, reporter R
 		}
 
 		if len(resp.ToolCalls) == 0 {
+			// 与 Run 同一套空输出救援
+			if silentTurn(resp) && emptyNudges < maxEmptyNudges {
+				emptyNudges++
+				log.Printf("[Engine] 空输出救援 %d/%d（finish_reason=%s）", emptyNudges, maxEmptyNudges, resp.FinishReason)
+				history = append(history, schema.Message{Role: schema.RoleUser, Content: emptyNudge(resp.FinishReason)})
+				continue
+			}
+			if silentTurn(resp) {
+				reporter.OnAssistantMessage(ctx, silentFallback)
+			}
 			log.Println("[Engine] 模型不再请求工具，任务完成，退出循环")
 			break
 		}

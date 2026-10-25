@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -78,7 +79,8 @@ type chatRequest struct {
 
 type chatResponse struct {
 	Choices []struct {
-		Message chatResponseMessage `json:"message"`
+		Message      chatResponseMessage `json:"message"`
+		FinishReason string              `json:"finish_reason"` // stop / length / tool_calls / content_filter
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens          int `json:"prompt_tokens"`
@@ -136,14 +138,20 @@ func NewDeepSeekProvider(apiKey, baseURL, model string) *OpenAIProvider {
 	})
 }
 
-// NewLMStudioProvider 本地 LM Studio：默认不需要 key，但首次加载 27B 模型可能很慢，
-// 所以超时给到 10 分钟；真正的上限由 ctx 控制。
+// NewLMStudioProvider 本地 LM Studio（或 llama.cpp server，同一套 OpenAI 协议）：
+// 默认不需要 key，但 27B 首次加载可能很慢，超时给到 10 分钟；真正的上限由 ctx 控制。
 func NewLMStudioProvider(baseURL, model string) *OpenAIProvider {
+	// 思考型模型（reasoning_content 单独算 token）一次能想 2000+ token：
+	// max_tokens 给小了，思考吃光额度就"说了个寂寞"（finish_reason=length + 空 content + 静默退出）。
+	// 默认 2048，LOCAL_MAX_TOKENS 可覆盖（14 tok/s 下 2048 ≈ 最差 2.4 分钟）。
+	maxTokens := 2048
+	if v, err := strconv.Atoi(os.Getenv("LOCAL_MAX_TOKENS")); err == nil && v > 0 {
+		maxTokens = v
+	}
 	return NewOpenAI(Config{
 		Name: "lmstudio", BaseURL: baseURL, APIKey: "", Model: model,
-		Timeout: 10 * time.Minute,
-		// 27B 量化模型在本地约 10~12 tok/s，不限长度时一次"思考"能跑 2000+ token
-		MaxTokens: 1024,
+		Timeout:   10 * time.Minute,
+		MaxTokens: maxTokens,
 	})
 }
 
@@ -207,8 +215,9 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 
 	m := parsed.Choices[0].Message
 	out := &schema.Message{
-		Role:    schema.RoleAssistant, // 返回的数据用RoleAssistant受理
-		Content: m.Content,
+		Role:         schema.RoleAssistant, // 返回的数据用RoleAssistant受理
+		Content:      m.Content,
+		FinishReason: parsed.Choices[0].FinishReason,
 	}
 	out.Usage = &schema.Usage{
 		PromptTokens:     parsed.Usage.PromptTokens,

@@ -31,6 +31,10 @@ type Message struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Usage      *Usage     `json:"usage,omitempty"`
 
+	// FinishReason 模型为什么停（ch32）：stop=正常说完，length=被 max_tokens 截断，tool_calls=要调工具。
+	// 由 provider 填充；不返回的厂商留空。引擎靠它区分"模型做完了"和"模型说到一半被砍了"。
+	FinishReason string `json:"finish_reason,omitempty"`
+
 	// Images 只用于 user 消息：data URL 形式（data:image/jpeg;base64,...）
 	// 厂商只接受 user 角色带图，system/assistant 带图会 400
 	Images []string `json:"images,omitempty"`
