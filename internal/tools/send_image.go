@@ -20,7 +20,15 @@ type ImageSender interface {
 	SendImage(ctx context.Context, absPath string) error
 }
 
+// FileSender 由外壳实现：把任意文件（pdf/zip/mp4...）发到飞书。
+// 与 ImageSender 同一个套路：飞书不能直接发本地文件，
+// 必须先走 /im/v1/files 上传换 file_key，再发 file 消息。
+type FileSender interface {
+	SendFile(ctx context.Context, absPath, fileName, fileType string) error
+}
+
 type imageSenderKey struct{}
+type fileSenderKey struct{}
 
 // WithImageSender 把 sender 塞进 ctx。
 // 为什么用 ctx 而不是工具字段：sender 是"这一次运行"的身份（回复哪条消息），
@@ -31,6 +39,16 @@ func WithImageSender(ctx context.Context, s ImageSender) context.Context {
 
 func imageSenderFrom(ctx context.Context) ImageSender {
 	s, _ := ctx.Value(imageSenderKey{}).(ImageSender)
+	return s
+}
+
+// WithFileSender 与 WithImageSender 同款：sender 是本次运行的身份，工具实例是进程级的
+func WithFileSender(ctx context.Context, s FileSender) context.Context {
+	return context.WithValue(ctx, fileSenderKey{}, s)
+}
+
+func fileSenderFrom(ctx context.Context) FileSender {
+	s, _ := ctx.Value(fileSenderKey{}).(FileSender)
 	return s
 }
 
@@ -51,6 +69,7 @@ func (t *SendImageTool) Definition() schema.ToolDefinition {
 		Name: t.Name(),
 		Description: "把工作区里的图片文件发送给用户。适用于把生成好的图表、截图、示意图发给用户。" +
 			"只支持 png/jpg/webp/gif 等图片；发文本请直接回复，不要调用本工具。" +
+			"文件（PDF/zip/mp4/doc）请用 send_file，不要用本工具。" +
 			"特别的，如果本地没有图片但是我想要你给我图片，可以去网站上搜索并下载，包括但不限于wallpaperaccess和images.hdqwalls.com等",
 		InputSchema: map[string]interface{}{
 			"type": "object",

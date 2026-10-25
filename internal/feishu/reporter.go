@@ -8,6 +8,7 @@ import (
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	"little-robot/internal/engine"
 	"little-robot/internal/schema"
+	"little-robot/internal/tools"
 	"log"
 	"os"
 )
@@ -80,6 +81,54 @@ func (r *FeishuReporter) NotifyError(ctx context.Context, err error) {
 
 func (r *FeishuReporter) NotifyBusy(ctx context.Context) {
 	r.send(ctx, "上一个任务还在跑，稍后再发")
+}
+
+var _ tools.FileSender = &FeishuReporter{}
+
+// SendFile 实现 tools.FileSender：先上传换 file_key，再用 file 消息回复。
+// fileType 是飞书的枚举（pdf/mp4/doc/xls/ppt/opus/stream），由 send_file 工具推断好传进来。
+func (r *FeishuReporter) SendFile(ctx context.Context, absPath, fileName, fileType string) error {
+	f, err := os.Open(absPath)
+	if err != nil {
+		return fmt.Errorf("打开文件失败：%w", err)
+	}
+	defer f.Close()
+
+	resp, err := r.client.Im.File.Create(ctx, larkim.NewCreateFileReqBuilder().
+		Body(larkim.NewCreateFileReqBodyBuilder().
+			FileType(fileType).
+			FileName(fileName).
+			File(f).
+			Build()).
+		Build())
+	if err != nil {
+		return fmt.Errorf("上传文件失败：%w", err)
+	}
+	if !resp.Success() {
+		return fmt.Errorf("上传文件被拒绝：code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	if resp.Data == nil || resp.Data.FileKey == nil {
+		return fmt.Errorf("上传成功但没有返回 file_key")
+	}
+
+	content, err := json.Marshal(map[string]string{"file_key": *resp.Data.FileKey})
+	if err != nil {
+		return fmt.Errorf("序列化文件消息失败：%w", err)
+	}
+
+	body := larkim.NewReplyMessageReqBodyBuilder().
+		MsgType("file").
+		Content(string(content)).
+		Build()
+	req := larkim.NewReplyMessageReqBuilder().
+		MessageId(r.messageID).
+		Body(body).
+		Build()
+
+	if _, err := r.client.Im.Message.Reply(ctx, req); err != nil {
+		return fmt.Errorf("发送文件消息失败：%w", err)
+	}
+	return nil
 }
 
 // SendImage 实现 tools.ImageSender：先上传换 image_key，再用 image 消息回复。

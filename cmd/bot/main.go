@@ -41,6 +41,7 @@ func main() {
 	registry.Register(tools.NewSendImageTool(workDir))
 	registry.Register(tools.NewImageTool(workDir, os.Getenv("PEXELS_API_KEY")))
 	registry.Register(tools.NewViewImageTool(workDir))
+	registry.Register(tools.NewSendFileTool(workDir))
 
 	eng := engine.NewAgentEngine(p, registry, workDir, false)
 	eng.SetContextTokens(llm.ContextTokens)

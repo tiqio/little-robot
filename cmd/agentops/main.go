@@ -42,6 +42,7 @@ func main() {
 	registry.Register(tools.NewSendImageTool(workDir))
 	registry.Register(tools.NewImageTool(workDir, os.Getenv("PEXELS_API_KEY")))
 	registry.Register(tools.NewViewImageTool(workDir))
+	registry.Register(tools.NewSendFileTool(workDir))
 	registry.Use(guard.Middleware(&guard.DenyApprover{}))
 
 	// 4. 子代理只用只读工具
