@@ -61,7 +61,8 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		return "", fmt.Errorf("path不能为空")
 	}
 
-	full, err := resolvePath(t.workDir, in.Path)
+	dir := effectiveWorkDir(ctx, t.workDir)
+	full, err := resolvePath(dir, in.Path) // 这里指定的path不能超出这个工作目录的范围
 	if err != nil {
 		return "", err
 	}

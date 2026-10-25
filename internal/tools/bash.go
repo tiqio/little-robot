@@ -132,7 +132,8 @@ func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	defer cancel()
 
 	cmd := t.command(timeoutCtx, in.Command)
-	cmd.Dir = t.workDir // 把当前cmd的执行滴滴放到workDir上面
+	//cmd.Dir = t.workDir // 把当前cmd的执行滴滴放到workDir上面
+	cmd.Dir = effectiveWorkDir(ctx, t.workDir)
 
 	// 把探测器找到的代理显式传给子进程：
 	// netutil 的代理探测只作用于程序自己发的请求，bash 里的 curl/wget 完全不知道，

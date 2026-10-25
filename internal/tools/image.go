@@ -124,7 +124,8 @@ func (t *ImageTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 		return "", fmt.Errorf("keyword 和 url 至少给一个")
 	}
 
-	full, err := resolvePath(t.workDir, in.Path)
+	dir := effectiveWorkDir(ctx, t.workDir)
+	full, err := resolvePath(dir, in.Path)
 	if err != nil {
 		return "", err
 	}

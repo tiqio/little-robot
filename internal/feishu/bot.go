@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"little-robot/internal/engine"
+	"little-robot/internal/runstate"
 	"little-robot/internal/session"
 	"little-robot/internal/tools"
+	"little-robot/internal/worktree"
 	"log"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -25,13 +29,53 @@ type Bot struct {
 	client    *lark.Client
 	sessions  *session.Manager
 
-	mu    sync.Mutex
-	seen  map[string]struct{}
-	locks map[string]*sync.Mutex
+	mu          sync.Mutex
+	seen        map[string]struct{}
+	locks       map[string]*sync.Mutex
+	worktreeMgr *worktree.Manager
+}
+
+// internal/worktree/worktree.go 里加一个判断，或者放在 bot 里
+// 表示这个目录本身是不是一个git仓库的根
+// RepoRoot(dir)问：dir所在的仓库，根在哪里？（可能是父目录）
+// isRepoRoot(dir)问：dir自己就是那个根吗？
+/*
+	$ cd /Users/dd/AITEST/little-robot/workspace
+	$ git rev-parse --show-toplevel
+	/Users/dd/AITEST/little-robot          ← 根在上一层
+
+	因为git worktree add是相对于仓库根来操作的，root == abs的比较：macOS上git返回的是解析过软连接的路径：
+	git rev-parse --show-toplevel  →  /private/tmp/symtest
+	filepath.Abs("/tmp/symtest")   →  /tmp/symtest          ← 不相等！
+
+	需要用os.SameFile来比较设备号+inode，此时/tmp/x和/private/tmp/x相同
+*/
+func isRepoRoot(dir string) bool {
+	root, err := worktree.RepoRoot(dir)
+	if err != nil {
+		return false
+	}
+	//abs, err := filepath.Abs(dir)
+	//if err != nil {
+	//	return false
+	//}
+	//return root == abs // 必须是根本身，不能是子目录
+
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return false
+	}
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+
+	// 用inode比较，同时解决软链（/tmp -> /private/tmp）和大小写不敏感文件系统
+	return os.SameFile(rootInfo, dirInfo)
 }
 
 func NewBot(appID, appSecret string, eng *engine.AgentEngine) *Bot {
-	return &Bot{
+	b := &Bot{
 		appID:     appID,
 		appSecret: appSecret,
 		eng:       eng,
@@ -40,6 +84,17 @@ func NewBot(appID, appSecret string, eng *engine.AgentEngine) *Bot {
 		seen:      make(map[string]struct{}),
 		locks:     make(map[string]*sync.Mutex),
 	}
+
+	if isRepoRoot(eng.WorkDir) {
+		if mgr, err := worktree.NewManager(eng.WorkDir); err == nil {
+			b.worktreeMgr = mgr
+		} else {
+			log.Printf("[Feishu] worktree初始化失败，改用普通子目录：%v", err)
+		}
+	} else {
+		log.Printf("[Feishu] 工作区%s不是git仓库根，不启用worktree（用普通子目录隔离）", eng.WorkDir)
+	}
+	return b
 }
 
 // UseSessions 允许调用方注入持久化管理器（飞书多轮会话需要跨进程记忆）
@@ -100,6 +155,14 @@ func (b *Bot) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) e
 		// 把本次运行的 sender 放进 ctx：send_image 工具靠它知道"回复哪条消息"
 		runCtx = tools.WithImageSender(runCtx, reporter)
 
+		// 每个群一个独立目录（也解决了之前“共用一个workspace”的问题）
+		//if b.worktreeMgr != nil {
+		// 无条件注入：让workDirFor自己决定用worktree还是子目录
+		rs := runstate.New()
+		rs.WorkDir = b.workDirFor(chatID)
+		runCtx = runstate.With(runCtx, rs)
+		//}
+
 		// 最小修法，bot里面建立一个共享会话（更好的做法是按照chatID分会话，每个用户共享记忆，但是这里先让它跑通）
 		// 现在改成了chatID，每个群一份记忆，写"feishu-default"会让A群的问题污染B群的答案"
 		sess := b.sessions.GetOrCreate(chatID, b.eng.WorkDir)
@@ -110,6 +173,37 @@ func (b *Bot) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) e
 	}()
 
 	return nil
+}
+
+func (b *Bot) workDirFor(chatID string) string {
+	safe := strings.NewReplacer("/", "_", "\\", "_", "..", "_").Replace(chatID)
+
+	if b.worktreeMgr != nil {
+		/*
+			第一次 Create: path=".../.worktrees/probe2" err=<nil>
+			第二次 Create: path="" err=worktree "probe2"已存在
+			这不行啊，第一次在.worktrees/chat-oc_a，第二次变成chat/oc_a了，必须把Create改成Ensure
+		*/
+		//if path, err := b.worktreeMgr.Create("chat-" + safe); err == nil {
+		//	return path // 自定义path为worktree
+		//}
+
+		path, created, err := b.worktreeMgr.Ensure("chat-" + safe)
+		if err == nil { // 当没有问题的时候会选择已有/创建的目录
+			if created {
+				log.Printf("[Feishu] 为会话%s新建worktree：%s", safe, path)
+			}
+			return path
+		}
+
+		log.Printf("[Feishu] 创建worktree失败，改用子目录：%v", err)
+	}
+
+	dir := filepath.Join(b.eng.WorkDir, "chats", safe) // safe是ID
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[Feishu] 建会话目录失败：%v", err)
+	}
+	return dir
 }
 
 func (b *Bot) markSeen(id string) bool {

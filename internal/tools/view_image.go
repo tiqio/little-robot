@@ -50,7 +50,8 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		return "", fmt.Errorf("path 不能为空")
 	}
 
-	full, err := resolvePath(t.workDir, in.Path)
+	dir := effectiveWorkDir(ctx, t.workDir)
+	full, err := resolvePath(dir, in.Path)
 	if err != nil {
 		return "", err
 	}

@@ -68,7 +68,8 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		return "", fmt.Errorf("old_text不能为空")
 	}
 
-	full, err := resolvePath(t.workDir, in.Path)
+	dir := effectiveWorkDir(ctx, t.workDir)
+	full, err := resolvePath(dir, in.Path)
 	if err != nil {
 		return "", err
 	}

@@ -6,6 +6,7 @@ import (
 	"little-robot/internal/observability"
 	"little-robot/internal/prompt"
 	"little-robot/internal/provider"
+	"little-robot/internal/runstate"
 	"little-robot/internal/schema"
 	"little-robot/internal/session"
 	"little-robot/internal/tools"
@@ -56,6 +57,15 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 	}
 	if reporter == nil {
 		reporter = NewTerminalReporter()
+	}
+
+	// 这样每个Run都会给自己挂一个RunState，之后只需要调整Dir即可
+	//rs := runstate.New()
+	//ctx = runstate.With(ctx, rs) 这样不对，因为宿主在外面设置的东西会被冲掉
+	rs := runstate.From(ctx)
+	if rs == nil { // 当已经存在worktree/存在RunState的时候就不进行动作
+		rs = runstate.New()
+		ctx = runstate.With(ctx, rs)
 	}
 
 	// 开根Span，退出时落盘

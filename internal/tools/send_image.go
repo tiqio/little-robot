@@ -79,7 +79,8 @@ func (t *SendImageTool) Execute(ctx context.Context, args json.RawMessage) (stri
 	}
 
 	// 复用沙箱：不允许把工作区外的文件当图片发出去
-	full, err := resolvePath(t.workDir, in.Path)
+	dir := effectiveWorkDir(ctx, t.workDir)
+	full, err := resolvePath(dir, in.Path)
 	if err != nil {
 		return "", err
 	}

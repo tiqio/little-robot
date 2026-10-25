@@ -59,7 +59,9 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		return "", fmt.Errorf("path不能为空")
 	}
 
-	full, err := resolvePath(t.workDir, in.Path)
+	// 运行时设置这个工作目录
+	dir := effectiveWorkDir(ctx, t.workDir)
+	full, err := resolvePath(dir, in.Path)
 	if err != nil {
 		return "", err
 	}

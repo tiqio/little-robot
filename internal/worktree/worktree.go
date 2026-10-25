@@ -77,6 +77,19 @@ func (m *Manager) Create(name string) (string, error) {
 	return path, nil
 }
 
+// Ensure 有就返回现有路径，没有才创建，返回created表示这次不是新建的
+func (m *Manager) Ensure(name string) (path string, created bool, err error) {
+	if err := validateName(name); err != nil {
+		return "", false, err
+	}
+	p := filepath.Join(m.baseDir, name)
+	if _, err := os.Stat(p); err == nil {
+		return p, false, nil // 表示已经有了
+	}
+	p, err = m.Create(name)
+	return p, err == nil, err
+}
+
 // List 返回baseDir下的所有worktree
 func (m *Manager) List() ([]Entry, error) {
 	out, err := runGit(m.repoRoot, "worktree", "list", "--porcelain")
