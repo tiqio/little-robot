@@ -6,6 +6,7 @@ import (
 	"little-robot/internal/config"
 	"little-robot/internal/engine"
 	"little-robot/internal/feishu"
+	"little-robot/internal/sources"
 	"little-robot/internal/tools"
 	"log"
 	"os"
@@ -42,6 +43,7 @@ func main() {
 	registry.Register(tools.NewImageTool(workDir, os.Getenv("PEXELS_API_KEY")))
 	registry.Register(tools.NewViewImageTool(workDir))
 	registry.Register(tools.NewSendFileTool(workDir))
+	registry.Register(tools.NewFetchHentaiTool(workDir, sources.NewNhentai(os.Getenv("NHENTAI_API_KEY"))))
 
 	eng := engine.NewAgentEngine(p, registry, workDir, false)
 	eng.SetContextTokens(llm.ContextTokens)

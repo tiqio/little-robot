@@ -9,6 +9,7 @@ import (
 	"little-robot/internal/guard"
 	"little-robot/internal/observability"
 	"little-robot/internal/session"
+	"little-robot/internal/sources"
 	"little-robot/internal/tools"
 	"log"
 	"os"
@@ -43,6 +44,7 @@ func main() {
 	registry.Register(tools.NewImageTool(workDir, os.Getenv("PEXELS_API_KEY")))
 	registry.Register(tools.NewViewImageTool(workDir))
 	registry.Register(tools.NewSendFileTool(workDir))
+	registry.Register(tools.NewFetchHentaiTool(workDir, sources.NewNhentai(os.Getenv("NHENTAI_API_KEY"))))
 	registry.Use(guard.Middleware(&guard.DenyApprover{}))
 
 	// 4. 子代理只用只读工具

@@ -114,17 +114,45 @@ func DoJSON(req *http.Request, maxBytes int64) ([]byte, error) {
 	return data, nil
 }
 
+// FetchOpt 按站点定制请求头。
+// 为什么要它：维基共享认"可识别的 UA"，而 nhentai 这类站在 Cloudflare 后面的
+// 站点更认"浏览器 UA"，一个默认值伺候不了所有站。
+type FetchOpt struct {
+	// UA 覆盖默认 UserAgent；空 = 用 UserAgent
+	UA string
+	// Referer 可选来源页
+	Referer string
+	// MaxBytes 响应大小上限；0 = 默认 10MB
+	MaxBytes int64
+}
+
 // Fetch 下载 URL，限制最大字节数，返回 body 和嗅探出的 Content-Type。
 // 用 LimitReader 判断超限，不会先把超大响应整个读进内存。
 func Fetch(ctx context.Context, rawURL string, maxBytes int64) ([]byte, string, error) {
+	return FetchWith(ctx, rawURL, FetchOpt{MaxBytes: maxBytes})
+}
+
+// FetchWith 是 Fetch 的可定制版本（UA / Referer / 上限）
+func FetchWith(ctx context.Context, rawURL string, opt FetchOpt) ([]byte, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("构造请求失败：%w", err)
 	}
 	// 维基共享等站点会拒绝 Go 默认的 "Go-http-client/1.1"（403），
 	// 按 RFC 约定带一个可识别的 UA
-	req.Header.Set("User-Agent", UserAgent)
+	ua := opt.UA
+	if ua == "" {
+		ua = UserAgent
+	}
+	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", "application/json, image/*;q=0.9, */*;q=0.8")
+	if opt.Referer != "" {
+		req.Header.Set("Referer", opt.Referer)
+	}
+	maxBytes := opt.MaxBytes
+	if maxBytes <= 0 {
+		maxBytes = 10 << 20
+	}
 
 	resp, err := NewClient(20 * time.Second).Do(req)
 	if err != nil {
