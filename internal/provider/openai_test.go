@@ -92,3 +92,73 @@ func TestLMStudioMaxTokensEnv(t *testing.T) {
 		t.Errorf("max_tokens = %d，期望 3333", parsed.MaxTokens)
 	}
 }
+
+// WithMaxTokens 单次覆盖：思考段/行动段用不同额度，不动 provider 默认
+func TestWithMaxTokensOverride(t *testing.T) {
+	var reqBody []byte
+	srv := cannedServer(t, stopBody, &reqBody)
+	p := NewOpenAI(Config{Name: "test", BaseURL: srv.URL, Model: "m", MaxTokens: 999})
+
+	ctx := WithMaxTokens(context.Background(), 555)
+	if _, err := p.Generate(ctx, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		MaxTokens int `json:"max_tokens"`
+	}
+	if err := json.Unmarshal(reqBody, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.MaxTokens != 555 {
+		t.Errorf("覆盖后 max_tokens = %d，期望 555（provider 默认 999 应被顶掉）", parsed.MaxTokens)
+	}
+
+	// 不覆盖时回落 provider 默认
+	if _, err := p.Generate(context.Background(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(reqBody, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.MaxTokens != 999 {
+		t.Errorf("不覆盖时 max_tokens = %d，期望回落到 999", parsed.MaxTokens)
+	}
+}
+
+// NoThink → 请求体带 chat_template_kwargs.enable_thinking=false（LOCAL_NO_THINK 逃生门）
+func TestNoThinkKwargs(t *testing.T) {
+	var reqBody []byte
+	srv := cannedServer(t, stopBody, &reqBody)
+	p := NewOpenAI(Config{Name: "test", BaseURL: srv.URL, Model: "m", NoThink: true})
+
+	if _, err := p.Generate(context.Background(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Kwargs map[string]interface{} `json:"chat_template_kwargs"`
+	}
+	if err := json.Unmarshal(reqBody, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := parsed.Kwargs["enable_thinking"]; !ok || v != false {
+		t.Errorf("enable_thinking = %v（ok=%v），期望 false", v, ok)
+	}
+}
+
+// reasoning_content 透传到 schema.Message.Reasoning（思考吃了多少预算就看它）
+func TestReasoningContentPassThrough(t *testing.T) {
+	body := `{"choices":[{"message":{"role":"assistant","content":"hi","reasoning_content":"let me think hard"},"finish_reason":"stop"}]}`
+	srv := cannedServer(t, body, nil)
+	p := NewOpenAI(Config{Name: "test", BaseURL: srv.URL, Model: "m"})
+
+	out, err := p.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Reasoning != "let me think hard" {
+		t.Errorf("Reasoning = %q，期望 'let me think hard'", out.Reasoning)
+	}
+	if out.Content != "hi" {
+		t.Errorf("Content = %q，期望 'hi'", out.Content)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -48,6 +49,33 @@ func LoadEnvFile(path string) error {
 func Get(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+// Int 读取 int 型环境变量；解析失败或 <=0 时回落到 def，不炸启动。
+// 思考/行动预算这类"给了就用、没给就默认"的数值配置走这里。
+func Int(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		n, err := strconv.Atoi(v)
+		if err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
+// Bool 读取布尔型环境变量：true/1/yes/on 为真，其余为假（含空串）。
+func Bool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	switch strings.ToLower(v) {
+	case "true", "1", "yes", "on":
+		return true
+	case "false", "0", "no", "off":
+		return false
 	}
 	return def
 }

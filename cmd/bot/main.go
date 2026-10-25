@@ -44,8 +44,9 @@ func main() {
 	registry.Register(tools.NewSendTool(workDir))
 	registry.Register(tools.NewFetchHentaiTool(workDir, sources.NewNhentai(os.Getenv("NHENTAI_API_KEY"))))
 
-	eng := engine.NewAgentEngine(p, registry, workDir, false)
+	eng := engine.NewAgentEngine(p, registry, workDir, llm.Thinking)
 	eng.SetContextTokens(llm.ContextTokens)
+	eng.SetThinkingBudgets(llm.ThinkTokens, llm.ActTokens)
 
 	bot := feishu.NewBot(appID, appSecret, eng)
 	if err := bot.Start(context.Background()); err != nil {

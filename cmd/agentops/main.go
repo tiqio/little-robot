@@ -53,8 +53,9 @@ func main() {
 	subReg.Use(guard.Middleware(&guard.DenyApprover{}))
 
 	// 5. 心脏
-	eng := engine.NewAgentEngine(tracker, registry, workDir, false)
+	eng := engine.NewAgentEngine(tracker, registry, workDir, llm.Thinking)
 	eng.SetContextTokens(llm.ContextTokens)
+	eng.SetThinkingBudgets(llm.ThinkTokens, llm.ActTokens)
 	//eng.PlanMode = true
 	registry.Register(tools.NewSubagentTool(eng, subReg))
 

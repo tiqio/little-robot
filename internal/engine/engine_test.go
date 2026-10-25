@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"little-robot/internal/provider"
 	"little-robot/internal/schema"
 	"little-robot/internal/session"
 	"little-robot/internal/tools"
@@ -119,3 +121,76 @@ func (r *spyReporter) OnToolResult(ctx context.Context, call schema.ToolCall, re
 }
 func (r *spyReporter) NotifyError(ctx context.Context, err error) {}
 func (r *spyReporter) NotifyBusy(ctx context.Context)             {}
+
+// recordingProvider 记录每次 Generate：有没有工具、当时的预算、历史尾巴
+type recordingProvider struct {
+	responses []schema.Message
+	calls     []callRecord
+}
+
+type callRecord struct {
+	toolCount int
+	maxTokens int
+	lastMsg   schema.Message
+}
+
+func (f *recordingProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+	idx := len(f.calls)
+	if idx >= len(f.responses) {
+		idx = len(f.responses) - 1
+	}
+	f.calls = append(f.calls, callRecord{
+		toolCount: len(availableTools),
+		maxTokens: provider.MaxTokensFrom(ctx, 0),
+		lastMsg:   msgs[len(msgs)-1],
+	})
+	resp := f.responses[idx]
+	return &resp, nil
+}
+
+// 思考/行动分家（S2）：第1次调用=思考段（无工具），之后每次=行动段（有工具），
+// 计划注入行动段历史，且每个 Run 只思考一次
+func TestThinkOnceThenAct(t *testing.T) {
+	workDir := t.TempDir()
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewBashTool(workDir))
+	s := session.New("test-think", workDir)
+
+	bashCall := schema.ToolCall{ID: "call_1", Name: "bash", Arguments: json.RawMessage(`{"command":"echo hi"}`)}
+	p := &recordingProvider{responses: []schema.Message{
+		{Role: schema.RoleAssistant, Content: "计划：跑一下 echo hi", FinishReason: "stop"},                                 // 思考段
+		{Role: schema.RoleAssistant, Content: "", ToolCalls: []schema.ToolCall{bashCall}, FinishReason: "tool_calls"}, // 行动段1
+		{Role: schema.RoleAssistant, Content: "搞定", FinishReason: "stop"},                                             // 行动段2（不再思考）
+	}}
+	eng := NewAgentEngine(p, reg, workDir, true)
+	eng.SetThinkingBudgets(2048, 1024)
+
+	if err := eng.Run(context.Background(), s, "跑个命令", NewTerminalReporter()); err != nil {
+		t.Fatalf("Run 失败：%v", err)
+	}
+
+	if len(p.calls) != 3 {
+		t.Fatalf("应该 3 次调用（1 思考 + 2 行动），实际 %d 次", len(p.calls))
+	}
+	// 第1次：思考段，没有工具，预算 2048
+	if p.calls[0].toolCount != 0 {
+		t.Errorf("思考段应该有 0 个工具，实际 %d", p.calls[0].toolCount)
+	}
+	if p.calls[0].maxTokens != 2048 {
+		t.Errorf("思考段预算 = %d，期望 2048", p.calls[0].maxTokens)
+	}
+	// 第2次：行动段，有工具，预算 1024，历史末尾是注入的计划
+	if p.calls[1].toolCount == 0 {
+		t.Error("行动段应该有工具")
+	}
+	if p.calls[1].maxTokens != 1024 {
+		t.Errorf("行动段预算 = %d，期望 1024", p.calls[1].maxTokens)
+	}
+	if p.calls[1].lastMsg.Role != schema.RoleAssistant || p.calls[1].lastMsg.Content != "计划：跑一下 echo hi" {
+		t.Errorf("行动段历史末尾应该是注入的计划，实际 role=%s content=%q", p.calls[1].lastMsg.Role, p.calls[1].lastMsg.Content)
+	}
+	// 第3次：还是行动段（本 Run 不再思考）
+	if p.calls[2].toolCount == 0 {
+		t.Error("第3次应该仍是行动段（有工具）")
+	}
+}

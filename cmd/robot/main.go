@@ -180,6 +180,7 @@ func main() {
 	//eng := engine.NewAgentEngine(p, registry, workDir, false)
 	eng := engine.NewAgentEngine(tracker, registry, workDir, opts.Think)
 	eng.SetContextTokens(llm.ContextTokens)
+	eng.SetThinkingBudgets(llm.ThinkTokens, llm.ActTokens)
 	eng.PlanMode = opts.Plan // 打开计划模式
 
 	// 主注册表：在原有工具之外，多一个“派子代理”，但是这个时候需要eng来RunSub

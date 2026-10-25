@@ -45,6 +45,9 @@ type chatResponseMessage struct {
 	Role      string         `json:"role"`
 	Content   string         `json:"content"`
 	ToolCalls []chatToolCall `json:"tool_calls"`
+	// Reasoning 思考型模型（Qwen3 系）的原始思考，llama.cpp/LM Studio 拆到独立字段。
+	// 它和 content 一起算 max_tokens 的账——"思考吃光输出额度"的根源就是它。
+	Reasoning string `json:"reasoning_content,omitempty"`
 }
 
 type chatToolCall struct {
@@ -75,6 +78,10 @@ type chatRequest struct {
 	Messages  []chatMessage `json:"messages"`
 	// Tools    []chatTool    `json:"tols,omitempty"` 发现这里没有调用Tool是因为没有传过去，为什么这里一点错误都不报？因为tag是字符串，编译器不检查内容，它不知道自己有get_weather，只能说“我查不出实时天气”，这是最危险的一类bug：静默失效，看prompt token能发现这里涨了很多
 	Tools []chatTool `json:"tools,omitempty"`
+
+	// ChatTemplateKwargs 透传给 llama.cpp / LM Studio 的 chat template：
+	// Qwen3 系思考模型用它关思考（enable_thinking: false），LOCAL_NO_THINK 逃生门
+	ChatTemplateKwargs map[string]interface{} `json:"chat_template_kwargs,omitempty"`
 }
 
 type chatResponse struct {
@@ -104,6 +111,7 @@ type Config struct {
 	Model     string        // 模型 id
 	Timeout   time.Duration // 单次请求上限
 	MaxTokens int           // 单次回复上限；本地小模型容易"想太多"，必须设
+	NoThink   bool          // 思考型模型关思考（Qwen3 的 enable_thinking: false）
 }
 
 type OpenAIProvider struct {
@@ -125,6 +133,7 @@ func NewOpenAI(cfg Config) *OpenAIProvider {
 			APIKey:    cfg.APIKey,
 			Model:     cfg.Model,
 			MaxTokens: cfg.MaxTokens,
+			NoThink:   cfg.NoThink,
 		},
 		client: &http.Client{Timeout: cfg.Timeout},
 	}
@@ -152,7 +161,37 @@ func NewLMStudioProvider(baseURL, model string) *OpenAIProvider {
 		Name: "lmstudio", BaseURL: baseURL, APIKey: "", Model: model,
 		Timeout:   10 * time.Minute,
 		MaxTokens: maxTokens,
+		// LOCAL_NO_THINK=true：Qwen3 系模板的 enable_thinking 开关。
+		// 思考全关掉后输出又快又稳，但模型"不假思索"——简单任务开、复杂任务关。
+		NoThink: isTruthy(os.Getenv("LOCAL_NO_THINK")),
 	})
+}
+
+// isTruthy 环境变量开关：只认真实值，其余（含空串）都是关
+func isTruthy(v string) bool {
+	switch v {
+	case "true", "1", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// maxTokensKey：单次调用的输出预算覆盖（思考段/行动段用不同额度，见 engine）
+type maxTokensKey struct{}
+
+// WithMaxTokens 临时覆盖单次调用的输出预算；n<=0 表示不覆盖（用 provider 默认）
+// 为什么用 ctx 而不是改 Generate 签名：LLMProvider 接口只动一次的地方
+// （engine），CostTracker/mock 这些装饰器全都不用跟着改。
+func WithMaxTokens(ctx context.Context, n int) context.Context {
+	return context.WithValue(ctx, maxTokensKey{}, n)
+}
+
+// MaxTokensFrom 读 ctx 里的预算覆盖；没有覆盖（或 <=0）时用 fallback
+func MaxTokensFrom(ctx context.Context, fallback int) int {
+	if n, ok := ctx.Value(maxTokensKey{}).(int); ok && n > 0 {
+		return n
+	}
+	return fallback
 }
 
 func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
@@ -160,7 +199,10 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 		Model:     p.cfg.Model,
 		Messages:  toChatMessages(msgs),
 		Tools:     toChatTools(availableTools),
-		MaxTokens: p.cfg.MaxTokens,
+		MaxTokens: MaxTokensFrom(ctx, p.cfg.MaxTokens),
+	}
+	if p.cfg.NoThink {
+		reqBody.ChatTemplateKwargs = map[string]interface{}{"enable_thinking": false}
 	}
 
 	raw, err := json.Marshal(reqBody)
@@ -217,6 +259,7 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 	out := &schema.Message{
 		Role:         schema.RoleAssistant, // 返回的数据用RoleAssistant受理
 		Content:      m.Content,
+		Reasoning:    m.Reasoning,
 		FinishReason: parsed.Choices[0].FinishReason,
 	}
 	out.Usage = &schema.Usage{

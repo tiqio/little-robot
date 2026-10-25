@@ -54,9 +54,13 @@ type AgentEngine struct {
 	WorkDir        string
 	EnableThinking bool // 注意这里是大写的，因为外部可以读写
 	PlanMode       bool
-	composer       *prompt.Composer
-	compactor      *session.Compactor
-	reminder       *Reminder
+	// thinkTokens/actTokens 思考段/行动段的输出预算（ch33/S2）。
+	// 0 = 不覆盖，用 provider 的默认 max_tokens。两段分开，思考吃不到行动的份。
+	thinkTokens int
+	actTokens   int
+	composer    *prompt.Composer
+	compactor   *session.Compactor
+	reminder    *Reminder
 }
 
 // 构造函数
@@ -83,6 +87,23 @@ func (e *AgentEngine) SetContextTokens(contextTokens int) {
 	}
 	e.compactor = session.NewCompactor(defaultMaxChars(contextTokens), keep)
 	log.Printf("[Engine] 上下文窗口 %d tokens，压缩阈值 %d 字符", contextTokens, e.compactor.MaxChars)
+}
+
+// SetThinkingBudgets 给思考段/行动段分别设输出预算（ch33/S2）。
+// 0 = 该段不覆盖 provider 默认。只有 EnableThinking=true 时思考段预算才用得上。
+func (e *AgentEngine) SetThinkingBudgets(thinkTokens, actTokens int) {
+	e.thinkTokens = thinkTokens
+	e.actTokens = actTokens
+	log.Printf("[Engine] 思考/行动预算：%d/%d tokens（0=用 provider 默认）", thinkTokens, actTokens)
+}
+
+// tailRunes 取字符串末尾 n 个 rune（按字切，不切半个中文）
+func tailRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return "…" + string(r[len(r)-n:])
 }
 
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, enableThinking bool) *AgentEngine {
@@ -141,6 +162,9 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 	// 用户这轮说的话给会话
 	s.Append(schema.Message{Role: schema.RoleUser, Content: userPrompt})
 
+	// 每个 Run 只规划一次：用户消息触发思考，之后的工具轮直接行动。
+	// 每轮都规划 = 每次工具结果回来都重新想一遍，27B 上纯属烧 token
+	planned := false
 	turn := 0
 	emptyNudges := 0
 	for {
@@ -160,23 +184,35 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 
 		var thinking string
 
-		if e.EnableThinking {
-			log.Println("[PLAN] 收走工具，进入规划阶段...")
+		if e.EnableThinking && !planned {
+			planned = true
+			log.Println("[PLAN] 收走工具，进入规划阶段（本Run只规划一次）...")
 			reporter.OnThinkingStart(ctx)
-			thinkResp, err := e.provider.Generate(ctx, history, nil)
+			// 思考段用独立预算（thinkTokens）：想再长也吃不到行动段的份
+			thinkResp, err := e.provider.Generate(provider.WithMaxTokens(ctx, e.thinkTokens), history, nil)
 			if err != nil {
 				return fmt.Errorf("思考阶段生成失败：%w", err)
 			}
-			if thinkResp.Content != "" {
-				reporter.OnThinkingText(ctx, thinkResp.Content)
-				thinking = thinkResp.Content
-				// s.Append(*thinkResp) // 注意这里同时维护了两个副本，session和history，history是为了包含systemPrompt和toolPrompt的：history是发给模型的快照，s是真实存档，让Phase2看到思考
-				history = append(history, *thinkResp)
+			thinking = strings.TrimSpace(thinkResp.Content)
+			if thinking == "" {
+				// 思考型模型：content 是空的，计划全在 reasoning_content 里。
+				// 取思考的末尾当"计划"——决策都在最后，开头那些"嗯...可能是..."是废料
+				if r := strings.TrimSpace(thinkResp.Reasoning); r != "" {
+					thinking = "（思考摘要）" + tailRunes(r, 300)
+					log.Printf("[Engine] 思考段 content 为空，用 reasoning 末尾 %d 字当计划", 300)
+				}
+			}
+			if thinking != "" {
+				reporter.OnThinkingText(ctx, thinking)
+				// 只把"计划"喂给行动段，不喂整段原始思考（省 token）；
+				// history 是发给模型的快照，session 是真实存档，两者分开维护
+				history = append(history, schema.Message{Role: schema.RoleAssistant, Content: thinking})
 			}
 		}
 
 		//log.Println("[EXECUTE] 进入执行阶段...")
-		resp, err := e.provider.Generate(ctx, history, availableTools)
+		// 行动段用独立预算（actTokens）：只需要吐工具调用或短结论
+		resp, err := e.provider.Generate(provider.WithMaxTokens(ctx, e.actTokens), history, availableTools)
 		if err != nil {
 			return fmt.Errorf("模型生成失败：%w", err)
 		}
@@ -310,7 +346,7 @@ func (e *AgentEngine) RunOnce(ctx context.Context, userPrompt string, reporter R
 		if e.EnableThinking {
 			log.Println("[Phase 1] 收走工具，进入规划阶段...")
 			reporter.OnThinkingStart(ctx)
-			thinkResp, err := e.provider.Generate(ctx, history, nil) // 传入nil就是收走工具，能用参数约束的就不要用提示词求它
+			thinkResp, err := e.provider.Generate(provider.WithMaxTokens(ctx, e.thinkTokens), history, nil) // 传入nil就是收走工具，能用参数约束的就不要用提示词求它
 			if err != nil {
 				return fmt.Errorf("思考阶段生成失败：%w", err)
 			}
@@ -323,7 +359,7 @@ func (e *AgentEngine) RunOnce(ctx context.Context, userPrompt string, reporter R
 
 		// ===== 挂回工具，让它行动 =====
 		log.Println("[Phase 2] 恢复工具，等待行动...")
-		resp, err := e.provider.Generate(ctx, history, availableTools)
+		resp, err := e.provider.Generate(provider.WithMaxTokens(ctx, e.actTokens), history, availableTools)
 		if err != nil {
 			return fmt.Errorf("模型生成失败：%w", err)
 		}

@@ -21,6 +21,14 @@ type LLM struct {
 
 	// ContextTokens 决定"历史什么时候开始压缩"。本地从 LM Studio 探测，云端写死 128K。
 	ContextTokens int
+
+	// Thinking 思考/行动分家（ch33/S2）：思考型模型跑两段——
+	// 思考段（收走工具、ThinkTokens 预算）→ 行动段（挂回工具、ActTokens 预算）。
+	// 两段预算分开，思考再长也吃不到行动的份，"思考吃光额度 → 静默退出"的悬崖就没了。
+	// 代价：每个 Run 多一次 LLM 调用，所以做成开关（THINKING），本地默认开、云端默认关。
+	Thinking    bool
+	ThinkTokens int
+	ActTokens   int
 }
 
 // NewLLM 按 USE_LOCAL 选后端：
@@ -48,6 +56,11 @@ func NewLLM() LLM {
 			Model:         model,
 			Local:         true,
 			ContextTokens: contextTokens,
+			// 本地 27B 是思考型模型：默认开两段。思考 2048 / 行动 1024，
+			// 14 tok/s 下典型一轮 ≈ 思考 20-40s + 行动 5-15s，飞书 10 分钟超时兜得住。
+			Thinking:    config.Bool("THINKING", true),
+			ThinkTokens: config.Int("LOCAL_THINK_TOKENS", 2048),
+			ActTokens:   config.Int("LOCAL_ACT_TOKENS", 1024),
 		}
 	}
 
@@ -63,6 +76,9 @@ func NewLLM() LLM {
 		Local:    false,
 		// 云端接口不返回窗口大小，DeepSeek 系列是 128K
 		ContextTokens: 128 * 1024,
+		// 云端默认单段（DeepSeek 非思考版）；用思考版（reasoner）时 THINKING=on
+		// 预算 0 = 不覆盖 provider 默认
+		Thinking: config.Bool("THINKING", false),
 	}
 }
 

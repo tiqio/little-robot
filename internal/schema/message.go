@@ -35,6 +35,11 @@ type Message struct {
 	// 由 provider 填充；不返回的厂商留空。引擎靠它区分"模型做完了"和"模型说到一半被砍了"。
 	FinishReason string `json:"finish_reason,omitempty"`
 
+	// Reasoning 思考型模型的原始思考（ch33）：Qwen3 系的 reasoning_content。
+	// 和 Content 分开存：content 是"说给人/工具听的"，reasoning 是"自言自语"。
+	// 引擎用 reasoning 判断"思考吃了多少预算"，会话落盘时可以折叠或丢弃它。
+	Reasoning string `json:"reasoning,omitempty"`
+
 	// Images 只用于 user 消息：data URL 形式（data:image/jpeg;base64,...）
 	// 厂商只接受 user 角色带图，system/assistant 带图会 400
 	Images []string `json:"images,omitempty"`

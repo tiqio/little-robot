@@ -29,7 +29,12 @@ func NewFeishuReporter(client *lark.Client, messageID string) *FeishuReporter {
 	return &FeishuReporter{client: client, messageID: messageID}
 }
 
-func (r *FeishuReporter) OnThinkingStart(ctx context.Context) {}
+// OnThinkingStart 思考型模型开始"规划段"时喊一声：
+// 之前思考能跑 74 秒，用户在飞书端一片空白、以为 bot 死了，直接放弃。
+// 现在先回一句"💭 思考中"，把等待变成"它在想"，体感完全不同。
+func (r *FeishuReporter) OnThinkingStart(ctx context.Context) {
+	r.send(ctx, "💭 思考中…")
+}
 
 func (r *FeishuReporter) OnThinkingText(ctx context.Context, text string) {}
 
