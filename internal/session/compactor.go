@@ -84,7 +84,7 @@ func (c *Compactor) Compact(msgs []schema.Message) []schema.Message {
 		if m.Role == schema.RoleUser && len(m.Images) > 0 && !inWorkingMemory {
 			n := len(m.Images)
 			m.Images = nil
-			note := imageNote(n)
+			note := ImageNote(n)
 			if strings.TrimSpace(m.Content) == "" {
 				m.Content = note
 			} else {
@@ -125,8 +125,8 @@ func (c *Compactor) estimate(msgs []schema.Message) int {
 	return n
 }
 
-// imageNote "看过图"的一句话占位：compactor（压历史）和 store（落盘剥图）共用同一句
-func imageNote(n int) string {
+// ImageNote "看过图"的一句话占位：compactor（压历史）、store（落盘剥图）、engine（剥图重试）共用同一句
+func ImageNote(n int) string {
 	return fmt.Sprintf("（此处查看过 %d 张图片，已省略图片内容）", n)
 }
 

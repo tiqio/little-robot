@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"little-robot/internal/observability"
 	"little-robot/internal/prompt"
@@ -39,6 +40,56 @@ func emptyNudge(finishReason string) string {
 
 // silentFallback 两次救援后还是没话：给用户一句话，别让人干等空白
 const silentFallback = "（我想了很久没想出结果。换个问法再试试？或者直接告诉我你要哪个。）"
+
+// callModel 发一次生成请求，遇到"后端不接受图片"就剥掉图片重试一次。
+//
+// 为什么要有这一层：真实事故里一张小 webp 让 llama.cpp 回 400，
+// 整个 Run 直接 error 结束，用户什么也没拿到。图片是"锦上添花"，
+// 不该成为整个任务的单点故障——剥掉图还能靠文字和工具继续干。
+//
+// 返回的 noImages 会带到后续轮次：一旦知道这个后端吃不了图，
+// 本 Run 就不再尝试，避免每轮都白跑一次请求。
+func (e *AgentEngine) callModel(ctx context.Context, history []schema.Message, toolDefs []schema.ToolDefinition, noImages bool) (*schema.Message, []schema.Message, bool, error) {
+	if noImages {
+		history, _ = stripImages(history)
+	}
+
+	resp, err := e.provider.Generate(ctx, history, toolDefs)
+	if err == nil || !errors.Is(err, provider.ErrImageRejected) {
+		return resp, history, noImages, err
+	}
+
+	stripped, ok := stripImages(history)
+	if !ok {
+		return nil, history, noImages, err // 本来就没图，救不了
+	}
+	log.Printf("[Engine] 后端拒绝了图片，剥掉图片重试一次（本 Run 后续不再带图）：%v", err)
+	resp, err2 := e.provider.Generate(ctx, stripped, toolDefs)
+	return resp, stripped, true, err2
+}
+
+// stripImages 把所有消息里的图片换成一句"看过图"的占位；返回 false 表示本来就没图。
+// 和 compactor/store 用同一句话，模型在三个地方看到的占位一致。
+func stripImages(msgs []schema.Message) ([]schema.Message, bool) {
+	found := false
+	out := make([]schema.Message, len(msgs))
+	copy(out, msgs)
+	for i := range out {
+		if len(out[i].Images) == 0 {
+			continue
+		}
+		found = true
+		n := len(out[i].Images)
+		out[i].Images = nil
+		note := session.ImageNote(n)
+		if strings.TrimSpace(out[i].Content) == "" {
+			out[i].Content = note
+		} else {
+			out[i].Content += "\n" + note
+		}
+	}
+	return out, found
+}
 
 /*
 	如何把call循环变成并发，需要注意哪些地方？
@@ -166,6 +217,7 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 	// 每个 Run 只规划一次：用户消息触发思考，之后的工具轮直接行动。
 	// 每轮都规划 = 每次工具结果回来都重新想一遍，27B 上纯属烧 token
 	planned := false
+	noImages := false // 后端拒过一次图之后，本 Run 不再带图
 	turn := 0
 	emptyNudges := 0
 	for {
@@ -190,7 +242,8 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 			log.Println("[PLAN] 收走工具，进入规划阶段（本Run只规划一次）...")
 			reporter.OnThinkingStart(ctx)
 			// 思考段用独立预算（thinkTokens）：想再长也吃不到行动段的份
-			thinkResp, err := e.provider.Generate(provider.WithMaxTokens(ctx, e.thinkTokens), history, nil)
+			thinkResp, newHistory, nmi, err := e.callModel(provider.WithMaxTokens(ctx, e.thinkTokens), history, nil, noImages)
+			history, noImages = newHistory, nmi
 			if err != nil {
 				return fmt.Errorf("思考阶段生成失败：%w", err)
 			}
@@ -213,7 +266,8 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 
 		//log.Println("[EXECUTE] 进入执行阶段...")
 		// 行动段用独立预算（actTokens）：只需要吐工具调用或短结论
-		resp, err := e.provider.Generate(provider.WithMaxTokens(ctx, e.actTokens), history, availableTools)
+		resp, newHistory, nmi, err := e.callModel(provider.WithMaxTokens(ctx, e.actTokens), history, availableTools, noImages)
+		history, noImages = newHistory, nmi
 		if err != nil {
 			return fmt.Errorf("模型生成失败：%w", err)
 		}

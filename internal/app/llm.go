@@ -58,7 +58,7 @@ func NewLLM() LLM {
 			ContextTokens: contextTokens,
 			// 本地 27B 是思考型模型：默认开两段。思考 2048 / 行动 1024，
 			// 14 tok/s 下典型一轮 ≈ 思考 20-40s + 行动 5-15s，飞书 10 分钟超时兜得住。
-			Thinking:    config.Bool("THINKING", true),
+			Thinking:    config.Bool("THINKING", false),
 			ThinkTokens: config.Int("LOCAL_THINK_TOKENS", 2048),
 			ActTokens:   config.Int("LOCAL_ACT_TOKENS", 1024),
 		}

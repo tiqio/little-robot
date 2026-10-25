@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"little-robot/internal/schema"
@@ -16,6 +17,28 @@ import (
 )
 
 var _ LLMProvider = &OpenAIProvider{}
+
+// ErrImageRejected 后端因为"图片格式/内容不认"拒绝了整个请求（通常是 HTTP 400）。
+// 单独拿出来是因为它可恢复：把图片剥掉重发一次，任务还能继续，
+// 而不是一张图把整轮对话跑死（真实事故：小 webp 让 llama.cpp 回 400）。
+var ErrImageRejected = errors.New("后端不接受请求里的图片")
+
+// looksLikeImageRejection 判断错误响应体是不是"图片不认"。
+// 各家措辞不同，只认已知的几种信号；宁可漏判（走普通错误）也别误判（乱剥图）。
+func looksLikeImageRejection(body string) bool {
+	b := strings.ToLower(body)
+	for _, kw := range []string{
+		"base64 encoded image", // llama.cpp: 'url' field must be a base64 encoded image.
+		"failed to load image",
+		"invalid url.",
+		"image_url",
+	} {
+		if strings.Contains(b, kw) {
+			return true
+		}
+	}
+	return false
+}
 
 // ===== 线格式（DeepSeek/OpenAI兼容协议）=====
 
@@ -238,7 +261,13 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("DeepSeek 返回 %d: %s", resp.StatusCode, truncate(string(respRaw), 500))
+		body := truncate(string(respRaw), 500)
+		if resp.StatusCode == http.StatusBadRequest && looksLikeImageRejection(body) {
+			// 文案带上 provider 名：之前这里硬编码 DeepSeek，
+			// 本地 llama.cpp 的 400 也被说成"DeepSeek 返回"，排查时被带偏
+			return nil, fmt.Errorf("%s 不接受这次请求里的图片：%w（响应：%s）", p.cfg.Name, ErrImageRejected, body)
+		}
+		return nil, fmt.Errorf("%s 返回 %d: %s", p.cfg.Name, resp.StatusCode, body)
 	}
 
 	var parsed chatResponse

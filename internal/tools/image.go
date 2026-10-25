@@ -489,12 +489,14 @@ func fileToDataURL(path string) (string, error) {
 		return "", fmt.Errorf("不支持的图片格式 %s", ctype)
 	}
 
-	// 摘要（ch34/S3）：大图降采样成 768px JPEG 再进上下文，原图留盘。
-	// 之前原图 base64 直接进历史，一张 3MB 的图 ≈ 几万 token，每轮都重新喂一遍。
-	if len(data) > carrierMinBytes {
-		if scaled, ok := downscaleToJPEG(data, carrierMaxDim); ok {
-			return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(scaled), nil
-		}
+	// 摘要 + 安全（ch34/ch36）：大图降采样，webp/gif 转 jpeg，坏图在这里就拦下。
+	// 之前小 webp 原样透传，本地 llama.cpp 直接 400：
+	//   'url' field must be a base64 encoded image.
+	// 一张图把整个任务跑死——现在由 carrierImage 统一整理成后端认的格式。
+	if converted, err := carrierImage(data, ctype); err != nil {
+		return "", err
+	} else if converted != nil {
+		return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(converted), nil
 	}
 	return "data:" + ctype + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }

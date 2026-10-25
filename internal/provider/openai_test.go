@@ -3,9 +3,11 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -160,5 +162,48 @@ func TestReasoningContentPassThrough(t *testing.T) {
 	}
 	if out.Content != "hi" {
 		t.Errorf("Content = %q，期望 'hi'", out.Content)
+	}
+}
+
+// 后端因为图片格式拒绝（llama.cpp 的真实文案）→ 必须识别成 ErrImageRejected，
+// 引擎才能剥图重试；识别不出来就是"一张图把任务跑死"
+func TestImageRejectionDetected(t *testing.T) {
+	bodies := []string{
+		`{"error":"'url' field must be a base64 encoded image."}`,
+		`{"error":{"code":400,"message":"Failed to load image or audio file"}}`,
+		`{"error":"Invalid url."}`,
+		`{"error":"bad image_url"}`,
+	}
+	for _, body := range bodies {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(body))
+		}))
+		p := NewOpenAI(Config{Name: "lmstudio", BaseURL: srv.URL, Model: "m"})
+		_, err := p.Generate(context.Background(), nil, nil)
+		srv.Close()
+
+		if !errors.Is(err, ErrImageRejected) {
+			t.Errorf("响应 %s 应该识别成拒图，实际 err=%v", body, err)
+		}
+	}
+}
+
+// 普通 400（跟图片无关）不能被误判成拒图，否则会白白剥图重试
+func TestNormal400NotImageRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"max_tokens is too large"}`))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAI(Config{Name: "lmstudio", BaseURL: srv.URL, Model: "m"})
+	_, err := p.Generate(context.Background(), nil, nil)
+	if errors.Is(err, ErrImageRejected) {
+		t.Errorf("普通 400 不该被当成拒图：%v", err)
+	}
+	// 错误文案应该带 provider 名，而不是硬编码 DeepSeek
+	if !strings.Contains(err.Error(), "lmstudio") {
+		t.Errorf("错误信息应该带 provider 名，实际：%v", err)
 	}
 }

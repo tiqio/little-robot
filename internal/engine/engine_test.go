@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -192,5 +193,60 @@ func TestThinkOnceThenAct(t *testing.T) {
 	// 第3次：还是行动段（本 Run 不再思考）
 	if p.calls[2].toolCount == 0 {
 		t.Error("第3次应该仍是行动段（有工具）")
+	}
+}
+
+// rejectingProvider 第一次带图就报"拒图"，剥图后成功：模拟小 webp 事故
+type rejectingProvider struct {
+	calls     int
+	sawImages []bool // 每次调用时历史里还有没有图
+}
+
+func (f *rejectingProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+	f.calls++
+	hasImage := false
+	for _, m := range msgs {
+		if len(m.Images) > 0 {
+			hasImage = true
+		}
+	}
+	f.sawImages = append(f.sawImages, hasImage)
+
+	if hasImage {
+		return nil, fmt.Errorf("%s 不接受这次请求里的图片：%w", "lmstudio", provider.ErrImageRejected)
+	}
+	return &schema.Message{Role: schema.RoleAssistant, Content: "图没看成，但我用文字答了", FinishReason: "stop"}, nil
+}
+
+// 拒图降级：带图请求失败 → 剥图重试一次 → 任务继续，用户拿到答案而不是 error
+func TestImageRejectedFallsBack(t *testing.T) {
+	s := session.New("test-img-fallback", t.TempDir())
+	// 会话里有一张图（模拟刚抓回来的图已经进历史）
+	s.Append(schema.Message{
+		Role:    schema.RoleUser,
+		Content: "看看这张图",
+		Images:  []string{"data:image/webp;base64,AAAA"},
+	})
+
+	p := &rejectingProvider{}
+	eng := NewAgentEngine(p, tools.NewRegistry(), t.TempDir(), false)
+
+	var got string
+	rep := &spyReporter{onMessage: func(text string) { got = text }}
+	if err := eng.Run(context.Background(), s, "这张图里有什么", rep); err != nil {
+		t.Fatalf("拒图应该降级而不是报错：%v", err)
+	}
+
+	if p.calls != 2 {
+		t.Fatalf("应该 2 次调用（带图失败 + 剥图重试），实际 %d 次", p.calls)
+	}
+	if !p.sawImages[0] {
+		t.Error("第1次调用应该带图")
+	}
+	if p.sawImages[1] {
+		t.Error("第2次调用必须已经剥掉图")
+	}
+	if !strings.Contains(got, "文字答了") {
+		t.Errorf("重试成功后应该把答案发给用户，实际 %q", got)
 	}
 }
