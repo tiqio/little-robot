@@ -58,8 +58,6 @@ var imageHosts = []string{
 	"t4.nhentai.net",
 }
 
-const imageMaxBytes = 10 << 20
-
 var _ BaseTool = &ImageTool{}
 
 type ImageTool struct {
@@ -79,7 +77,7 @@ func (t *ImageTool) Name() string { return "fetch_image" }
 func (t *ImageTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name: t.Name(),
-		Description: `获取一张图片存到工作区，并把图片回传给你"看"，随后用 send_image 发送。
+		Description: `获取一张图片存到工作区，并把图片回传给你"看"，随后用 send 发给用户。
 
 用法（二选一）：
 A. keyword：按关键词搜现成照片，只用三个可信源，依次尝试：
@@ -100,7 +98,7 @@ source=anime（二次元）：走 yande.re/Danbooru/Safebooru/nekos.best/Konacha
    - 返回里会写「实际标签：xxx」，看清它再去调整关键词，不要盲目换词重试。
 
 【必须看图确认】拿到图后你要先判断它是否符合用户要求：
-- 符合 → 调 send_image 发送；
+- 符合 → 调 send 发送；
 - 不符合（内容不对、太糊、明显是无关图）→ 换下一个候选 url 重新 fetch_image，
   或换更具体的英文关键词。最多换 3 次，仍不行就如实告诉用户没找到合适的。
 - 返回里会列出同批候选，可以直接用它们的 url 重试，不要自己编 URL。
@@ -230,7 +228,7 @@ func (t *ImageTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 
 		var b strings.Builder
 		b.WriteString(out)
-		b.WriteString("\n\n【先看图确认】符合要求再 send_image；不符合就换下面候选重试：\n")
+		b.WriteString("\n\n【先看图确认】符合要求再 send；不符合就换下面候选重试：\n")
 		limit := len(cands)
 		if limit > 5 {
 			limit = 5
@@ -275,12 +273,8 @@ func (t *ImageTool) download(ctx context.Context, rawURL, relPath, full, source 
 		return "", fmt.Errorf("保存图片失败：%w", err)
 	}
 
-	// 把图片塞进 carrier，engine 会用它作为一条 user 消息回传给模型
-	if box, ok := ctx.Value(imageCarrierKey{}).(*[]string); ok && box != nil {
-		if dataURL, derr := fileToDataURL(full); derr == nil {
-			*box = append(*box, dataURL)
-		}
-	}
+	// 把图片塞进 carrier，engine 会用它作为一条 user 消息回传给模型（挂载失败不挡下载成功）
+	attachImage(ctx, full)
 
 	return fmt.Sprintf("已保存到 %s（%s，%d 字节）。来源：%s。", relPath, ctype, len(data), source), nil
 }
@@ -492,6 +486,27 @@ func fileToDataURL(path string) (string, error) {
 		return "", fmt.Errorf("不支持的图片格式 %s", ctype)
 	}
 	return "data:" + ctype + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+// attachImage 把工作区里的图片挂到 carrier 上，engine 会作为 user 消息回传给模型。
+// fetch_image / view_image / fetch_hentai 共用——之前这 5 行在四处各抄了一份。
+// 挂载失败不算错误：文件已在工作区，只是模型暂时"看不见"，可以再用 view_image 补。
+func attachImage(ctx context.Context, absPath string) bool {
+	dataURL, err := fileToDataURL(absPath)
+	if err != nil {
+		return false
+	}
+	return attachDataURL(ctx, dataURL)
+}
+
+// attachDataURL 把已经算好的 dataURL 挂上 carrier（给"文件刚读过、不想再读一次"的场景用）
+func attachDataURL(ctx context.Context, dataURL string) bool {
+	box, ok := ctx.Value(imageCarrierKey{}).(*[]string)
+	if !ok || box == nil {
+		return false
+	}
+	*box = append(*box, dataURL)
+	return true
 }
 
 // ---- 二次元图源 ----

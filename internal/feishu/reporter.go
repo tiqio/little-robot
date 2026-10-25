@@ -86,7 +86,7 @@ func (r *FeishuReporter) NotifyBusy(ctx context.Context) {
 var _ tools.FileSender = &FeishuReporter{}
 
 // SendFile 实现 tools.FileSender：先上传换 file_key，再用 file 消息回复。
-// fileType 是飞书的枚举（pdf/mp4/doc/xls/ppt/opus/stream），由 send_file 工具推断好传进来。
+// fileType 是飞书的枚举（pdf/mp4/doc/xls/ppt/opus/stream），由 send 工具推断好传进来。
 func (r *FeishuReporter) SendFile(ctx context.Context, absPath, fileName, fileType string) error {
 	f, err := os.Open(absPath)
 	if err != nil {

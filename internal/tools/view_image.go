@@ -25,7 +25,7 @@ func (t *ViewImageTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name: t.Name(),
 		Description: "查看工作区里的一张图片（png/jpg/webp/gif），图片会作为消息回传给你。" +
-			"用于确认图片内容是否符合要求，或查看用户提供的截图。不要用它发送图片（发送用 send_image）。",
+			"用于确认图片内容是否符合要求，或查看用户提供的截图。不要用它发送图片（要发给用户用 send）。",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -56,13 +56,11 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		return "", err
 	}
 
+	// fileToDataURL 先做一次格式校验（不是图片要报清楚），再复用算好的 dataURL 挂 carrier
 	dataURL, err := fileToDataURL(full)
 	if err != nil {
 		return "", err
 	}
-
-	if box, ok := ctx.Value(imageCarrierKey{}).(*[]string); ok && box != nil {
-		*box = append(*box, dataURL)
-	}
+	attachDataURL(ctx, dataURL)
 	return fmt.Sprintf("已加载图片 %s，请查看。", in.Path), nil
 }

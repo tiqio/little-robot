@@ -26,8 +26,8 @@ fetch_hentai：从 nhentai（最大的免费本子库）抓本子。
   挑定后带 id_or_url 再调一次。
 
 format=zip（默认）：整本打包成一个 zip 文件（优先官方下载接口，没 key 就
-逐页下载自己用标准库打 zip）→ 最后用 send_file 一次发给用户；
-format=images：逐页存成 001.jpg... → 逐张 send_image（>30 页建议 zip）。
+逐页下载自己用标准库打 zip）→ 最后用 send 一次发给用户；
+format=images：逐页存成 001.jpg... → 逐张 send（>30 页建议 zip）。
 */
 
 var _ BaseTool = &FetchHentaiTool{}
@@ -57,8 +57,8 @@ C. page：最新本子列表的第 N 页（对应官网 https://nhentai.net/?pag
    用户说"看看今天/最近有什么新本子"就用它，page 不填就是第 1 页。
 
 format（仅 A 用，默认 zip）：
-- zip：整本一个 zip 文件 → send_image(封面) + send_file(zip)，一次发齐，推荐；
-- images：逐页 001.jpg... → 逐张 send_image（页数多时很刷屏，>30 页建议 zip）。
+- zip：整本一个 zip 文件 → send(封面) + send(zip)，一次发齐，推荐；
+- images：逐页 001.jpg... → 逐张 send（页数多时很刷屏，>30 页建议 zip）。
 
 发完补一句总结：标题 / 作者 / 页数 / 来源链接（https://nhentai.net/g/<id>/）。`,
 		InputSchema: map[string]interface{}{
@@ -147,11 +147,7 @@ func (t *FetchHentaiTool) Execute(ctx context.Context, args json.RawMessage) (st
 	if coverData != nil {
 		if werr := os.WriteFile(filepath.Join(dir, coverRel), coverData, 0o644); werr == nil {
 			hasCover = true
-			if box, ok := ctx.Value(imageCarrierKey{}).(*[]string); ok && box != nil {
-				if dataURL, derr := fileToDataURL(filepath.Join(dir, coverRel)); derr == nil {
-					*box = append(*box, dataURL)
-				}
-			}
+			attachImage(ctx, filepath.Join(dir, coverRel)) // 封面回传给模型"看着挑"
 		}
 	} else {
 		coverNote = "（封面和第 1 页都没抓到，不影响整本）"
@@ -172,7 +168,7 @@ func (t *FetchHentaiTool) Execute(ctx context.Context, args json.RawMessage) (st
 
 	coverHint := ""
 	if hasCover {
-		coverHint = "send_image(" + coverRel + ") 发封面，再"
+		coverHint = "send(" + coverRel + ") 发封面，再"
 	}
 
 	switch format {
@@ -182,14 +178,14 @@ func (t *FetchHentaiTool) Execute(ctx context.Context, args json.RawMessage) (st
 			b.WriteString("⚠️ 部分页失败：" + perr.Error() + "\n")
 		}
 		b.WriteString(fmt.Sprintf("页面已存到 %s/001.jpg…（共 %d 页）\n", base, len(paths)))
-		b.WriteString(coverHint + "逐张 send_image 页面；页多（>30）就告诉用户下次用 zip")
+		b.WriteString(coverHint + "逐张 send 页面；页多（>30）就告诉用户下次用 zip")
 	default: // zip
 		zipRel, zerr := t.makeZip(ctx, dir, base, g)
 		if zerr != nil {
 			return "", zerr
 		}
 		b.WriteString("整本已打包：" + zipRel + "\n")
-		b.WriteString(coverHint + "send_file(" + zipRel + ") 发整本")
+		b.WriteString(coverHint + "send(" + zipRel + ") 发整本")
 	}
 	return b.String(), nil
 }
@@ -256,11 +252,7 @@ func (t *FetchHentaiTool) listMode(ctx context.Context, dir, heading string, ite
 		if err := os.WriteFile(filepath.Join(dir, rel), data, 0o644); err != nil {
 			continue
 		}
-		if box, ok := ctx.Value(imageCarrierKey{}).(*[]string); ok && box != nil {
-			if dataURL, derr := fileToDataURL(filepath.Join(dir, rel)); derr == nil {
-				*box = append(*box, dataURL)
-			}
-		}
+		attachImage(ctx, filepath.Join(dir, rel)) // 缩略图回传给模型"看着挑"
 	}
 
 	b.WriteString("挑一个最相关的，再调一次并带上 id_or_url=<id>")

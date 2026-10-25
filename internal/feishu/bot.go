@@ -156,7 +156,7 @@ func (b *Bot) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) e
 		runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 
-		// 把本次运行的 sender 放进 ctx：send_image / send_file 工具靠它知道"回复哪条消息"
+		// 把本次运行的 sender 放进 ctx：send 工具靠它知道"回复哪条消息"
 		runCtx = tools.WithImageSender(runCtx, reporter)
 		runCtx = tools.WithFileSender(runCtx, reporter)
 
