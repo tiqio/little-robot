@@ -46,7 +46,10 @@ func (t *FetchHentaiTool) Name() string { return "fetch_hentai" }
 func (t *FetchHentaiTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name: t.Name(),
-		Description: `从 nhentai 抓一本二次元本子（用户说"本子/同人本/nh/抓 g/12345"都用这个）。
+		Description: `从 nhentai 抓一本二次元本子（用户说"本子/同人本/nh/抓 g/12345"，或贴了 nhentai.net 链接，都用这个）。
+
+适用：用户要**整本**（多页、要打包/要收藏）。
+用户只要**一张图**（壁纸/角色图/色图）→ 用 fetch_image(source=anime)，别为一张图抓整本。
 
 用法（三选一，优先级 id_or_url > query > page）：
 A. id_or_url：本子数字或链接（12345 / 123-abc / https://nhentai.net/g/12345/）。

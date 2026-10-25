@@ -66,7 +66,8 @@ func (t *BashTool) Name() string {
 // 不管哪种 shell 都一样的部分
 const (
 	bashPreamble = "在工作区执行一条命令，支持串联与重定向，返回 stdout 和 stderr 的合并输出，最长 8000 字节，超时 30 秒"
-	bashFileRule = "注意：读取文件请用 read_file，写入或整体覆盖文件请用 write_file，修改已有文件中的局部内容请用 edit_file，不要用 cat/head 读文件，不要用 sed/echo 写文件"
+	bashFileRule = "注意：读取文件请用 read_file，写入或整体覆盖文件请用 write_file，修改已有文件中的局部内容请用 edit_file，不要用 cat/head 读文件，不要用 sed/echo 写文件。" +
+		"下载外部图片直链优先 fetch_image(url)（自动走代理，图会自动回传给你看）；只有域名不在白名单时，才用 curl 自己下"
 )
 
 // 方言提示：只说“Windows 下用 Git Bash”是不够的，模型会按 cmd 的习惯写 2>nul、dir /b、&，

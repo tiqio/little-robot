@@ -94,6 +94,18 @@ var hintRules = []hintRule{
 		hint:   "网络超时。不要反复重试同一个地址：换一个来源，或改用别的数据获取方式。",
 	},
 
+	// ---- nhentai：匿名限流 + CDN 抖动 ----
+	{
+		substr: "http 429",
+		hint: "nhentai 匿名限流（搜索约 10 次/分钟）。别再连着翻：把搜索词写准一点减少往返，" +
+			"或稍等一会儿；也可以让用户给个具体 id 直接抓详情。",
+	},
+	{
+		substr: "cdn 试了两轮都失败",
+		hint: "nhentai 图片 CDN 抖动（常见于代理网络）。封面/页面失败不挡整本，" +
+			"重试一次通常就好；仍失败就告诉用户网络问题，别无限重试。",
+	},
+
 	// ---- 图片工具 ----
 	{
 		tool:   "fetch_image",
@@ -102,9 +114,8 @@ var hintRules = []hintRule{
 			"anime 模式用 Danbooru/Safebooru；不要自己去拼第三方图片站的 URL。",
 	},
 	{
-		substr: "超过 10mb",
-		hint: "文件超过 10MB 上限。先压缩或缩小尺寸（图片可用 `sips -Z 1600 in.jpg --out out.jpg`），" +
-			"或换一个更小的资源。",
+		substr: "字节上限",
+		hint:   "抓回来的资源太大（超过下载上限）。图片就换更小尺寸或别的来源；不要对着同一个 URL 反复重试。",
 	},
 }
 

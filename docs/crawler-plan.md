@@ -4,6 +4,7 @@
 > - ✅ **M1 文件投递**（ch27）：`send_file` + `FileSender` + `/im/v1/files`，PDF/zip 到飞书客户端
 > - ✅ **M2 NSFW 图源**（ch28）：yande.re 主力 + Danbooru `rating` 开关 + `fetch_image` 新增 `rating` 参数
 > - ✅ **M4 nhentai**（ch29）：`fetch_hentai` 工具（id/URL 直抓、query 搜索、page 翻最新列表）+ zip/images 两种形态
+> - ✅ **工具归一**（ch30/ch31）：`send_image`+`send_file` 合并为 `send`（按扩展名+大小自动路由消息形态）；描述手术（单图/整本决策规则、看/发流水线、bash 少 curl）
 > - ⏳ **M3 通用爬虫** `fetch_page`、**M5 体验增强**（post 网格 / flip 合并 PDF / 限流缓存）待排期
 >
 > 实现时的实测补充（方案初稿没写到的）：
@@ -17,13 +18,13 @@
 ## 1. 现状盘点
 
 ```
-用户消息 → engine → fetch_image（找图/下载）→ 图片经 imageCarrier 回传模型"看" → send_image → 飞书
+用户消息 → engine → fetch_image（找图/下载）→ 图片经 imageCarrier 回传模型"看" → send → 飞书
 ```
 
 | 组件 | 位置 | 现状 |
 |---|---|---|
 | `fetch_image` | `internal/tools/image.go` | 关键词搜索（photo: Pexels→Openverse→Wikimedia；anime: Danbooru→Safebooru→nekos）/ URL 直链下载（白名单 `imageHosts`）。下载完把图回传给模型确认 |
-| `send_image` | `internal/tools/send_image.go` + `internal/feishu/reporter.go` | `ImageSender` 接口（tools 定义、feishu 实现）→ `/im/v1/images` 上传 → image 消息回复原消息 |
+| `send` | `internal/tools/send.go` + `internal/feishu/reporter.go` | `ImageSender`+`FileSender` 接口（tools 定义、feishu 实现）→ 自动路由：图片≤10MB 走 `/im/v1/images`，其余走 `/im/v1/files`（ch30 合并 send_image+send_file） |
 | `view_image` | `internal/tools/view_image.go` | 看工作区里已有的图 |
 | `netutil` | `internal/netutil/fetch.go` | 代理自动探测 + UA + LimitReader 大小上限 |
 
@@ -52,7 +53,7 @@
 飞书客户端
    ▲  image 消息 / file 消息(pdf,zip) / post 富文本网格
    │  internal/feishu/reporter.go   （SendImage 已有 + SendFile 新增）
-工具层   fetch_image(扩展)  fetch_page(新)  fetch_hentai(新)  send_image(不动)  send_file(新)  view_image(不动)
+工具层   fetch_image(扩展)  fetch_page(新)  fetch_hentai(新)  send(ch30合并)  view_image(不动)
    │
 图源层   internal/sources/nhentai.go(新)  + tools 内 yande/konachan/danbooru(r18 开关)
    │
@@ -65,16 +66,16 @@
 
 ## 4. 逐模块设计
 
-### 4.1 M1 飞书文件投递（`send_file`）
+### 4.1 M1 飞书文件投递（`send_file`，ch30 后并入 `send`）
 
-- `internal/tools/send_image.go`：新增接口（`ImageSender` 不动，避免破坏现有调用方）
+- `internal/tools/send_image.go`（ch30 时已并入 `send.go`）：新增接口（`ImageSender` 不动，避免破坏现有调用方）
   ```go
   type FileSender interface {
       SendFile(ctx context.Context, absPath, fileName, fileType string) error
   }
   // + WithFileSender(ctx, s) / fileSenderFrom(ctx)   // 与 WithImageSender 同款
   ```
-- `internal/tools/send_file.go`（新）：`send_file` 工具。参数 `path` + 可选 `name`；`fileType` 按扩展名自动推断：`.pdf→pdf`、`.zip→stream`（zip 在飞书走 stream 类型）、`.mp4→mp4`、`.doc/xls/ppt`、其余→`stream`。
+- `internal/tools/send_file.go`（新，ch30 时与 send_image.go 合并为 `send.go`）：`send_file` 工具。参数 `path` + 可选 `name`；`fileType` 按扩展名自动推断：`.pdf→pdf`、`.zip→stream`（zip 在飞书走 stream 类型）、`.mp4→mp4`、`.doc/xls/ppt`、其余→`stream`。
 - `internal/feishu/reporter.go`：实现 `SendFile`
   ```go
   resp := r.client.Im.File.Create(ctx, larkim.NewCreateFileReqBuilder().
@@ -122,7 +123,7 @@
   4. 并行下载（信号量 4 路），存 `out/crawl/<host>/001.jpg...`（相对 `effectiveWorkDir`，群隔离自动继承）；
   5. 返回结构化清单给模型：`[图片] path / 尺寸 / 字节`、`[PDF] path / 字节`、页面 `<title>` + `og:description` 摘要；
   6. 图片走 `imageCarrier` 回传模型"先看再发"（沿用 fetch_image 的既有机制）。
-- **模型行为**（写进工具 Description）：拿到清单后自己挑——用户要"全部"就逐个 `send_image`/`send_file`，要"主图"就只发 og:image；PDF 用 `send_file`。
+- **模型行为**（写进工具 Description）：拿到清单后自己挑——用户要"全部"就逐个 `send`，要"主图"就只发 og:image；PDF 也走 `send`（自动路由 file 消息）。
 - **降级**：SPA 页面（无 SSR 内容）→ 只有 og:image + title，如实告诉用户"这页是 JS 渲染的，只抓到主图"，不死循环重试。
 - **安全**：抓到的媒体域名过 `mediaHosts` 白名单 + 单文件大小上限（默认 10MB 图 / 30MB PDF），防止网页里一张 50MB 的图把内存和飞书额度吃光。
 
@@ -143,9 +144,9 @@
 - `internal/tools/fetch_hentai.go`（新）：`fetch_hentai` 工具
   - 输入：`id_or_url`（解析 `https://nhentai.net/g/12345/` 或 `123-abc` 或裸 id）三选一 + `query`（搜索模式）；`pages`（页码范围，默认全部）；`format`（`zip` 默认 | `images` | `pdf`）。
   - 行为：
-    1. 详情 → 先发**封面**（send_image）+ 标题/作者/标签/页数（imageCarrier 让模型确认是不是用户要的本）；
+    1. 详情 → 先发**封面**（send）+ 标题/作者/标签/页数（imageCarrier 让模型确认是不是用户要的本）；
     2. 搜索模式 → 前 5 个候选（缩略图 + 标题 + 页数），模型挑一个再抓；
-    3. `format=zip`：`POST /download?format=zip` → 官方 zip（≤30MB 直发 `send_file`；超限降级 images 模式并说明）；
+    3. `format=zip`：`POST /download?format=zip` → 官方 zip（≤30MB 直发 `send`；超限降级 images 模式并说明）；
     4. `format=images`：4 路并行下载 `{image_server}/{path}` → `001.jpg...` → 逐张发（>30 张建议 post 网格，M5）；
     5. 收尾文本：标题 / artist / tags / 页数 / 来源链接。
   - 模型只看封面 + 第 1 页（不灌 100 张图给模型，imageCarrier 32MB/张 的预算省着用）。
@@ -167,17 +168,17 @@
 | 文件 | 调整 | 里程碑 |
 |---|---|---|
 | `internal/tools/image.go` | ① schema 加 `rating` 参数；② `danbooruTags()` 的 skip map 按 rating 条件生效（explicit 时不丢 r18 词）；③ `searchDanbooru` 的 `rating:general` 参数化；④ `imageHosts` 追加新域名；⑤ 更新工具 Description（模型手册） | M2/M4 |
-| `internal/tools/send_image.go` | 加 `FileSender` 接口 + `WithFileSender`/`fileSenderFrom`（`ImageSender` 原样保留） | M1 |
+| `internal/tools/send.go` | ch30：`send_image.go`+`send_file.go` 合并为 `send.go`（`ImageSender`/`FileSender` 接口都在这，自动路由消息形态） | M1/ch30 |
 | `internal/feishu/reporter.go` | 实现 `SendFile`（`Im.File.Create` → file_key → file 消息） | M1 |
 | `internal/feishu/bot.go` | `onMessage` 里 `runCtx = tools.WithFileSender(runCtx, reporter)` | M1 |
 | `internal/netutil/fetch.go` | 加 `FetchWith(ctx, url, opt)`（自定义 UA/Referer/Accept/MaxBytes），现有 `Fetch` 变成它的薄封装；（M5：按域名限流器） | M3/M4 |
-| `cmd/bot/main.go` + `cmd/agentops/main.go` | 注册 3 个新工具：`NewSendFileTool`、`NewFetchPageTool`、`NewFetchHentaiTool` | M1-M4 |
+| `cmd/bot/main.go` + `cmd/agentops/main.go` | 注册新工具：`NewSendTool`（ch30 前是 `NewSendImageTool`+`NewSendFileTool`）、`NewFetchPageTool`、`NewFetchHentaiTool` | M1-M4 |
 
 ### 新增（4 个文件）
 
 | 文件 | 内容 | 里程碑 |
 |---|---|---|
-| `internal/tools/send_file.go` | `send_file` 工具（扩展名→fileType 推断） | M1 |
+| `internal/tools/send.go` | `send` 工具（ch30 合并：扩展名+大小自动路由 image/file 消息；扩展名→fileType 推断） | M1/ch30 |
 | `internal/tools/image_sources.go` | `searchYande` / `searchKonachan` / `searchSankarea`（与现有 search 函数同签名） | M2 |
 | `internal/tools/fetch_page.go` | 通用爬虫（HTML 解析 + 媒体提取 + 并行下载 + 清单回传） | M3 |
 | `internal/sources/nhentai.go` + `internal/tools/fetch_hentai.go` | nhentai v2 客户端 + 工具 | M4 |
@@ -190,7 +191,7 @@
 ### 不动的（回归保障）
 
 - `internal/schema`（AGENTS.md 铁律：协议字段名不动）
-- `engine/loop.go` 的 imageCarrier 机制、`view_image`、`send_image` 现有行为
+- `engine/loop.go` 的 imageCarrier 机制、`view_image`、`send`（原 send_image）现有行为
 - 飞书后台：**`im:resource` 已开，不用重新发版**
 
 ---
@@ -215,7 +216,7 @@
 
 | 里程碑 | 内容 | 状态 | 验收 |
 |---|---|---|---|
-| **M1** 文件投递 | `FileSender` + `send_file` + `reporter.SendFile` + bot 装配 | ✅ ch27 | `send_file out/report.pdf` → 飞书收到 file 消息 |
+| **M1** 文件投递 | `FileSender` + `send_file`（ch30 并入 `send`）+ `reporter.SendFile` + bot 装配 | ✅ ch27 | `send out/report.pdf` → 飞书收到 file 消息 |
 | **M2** NSFW 图源 | yande 源 + Danbooru rating 开关 + `rating` 参数 + 白名单 | ✅ ch28 | "给我来张 cat_ears r18 图" → 收到 R18 图 |
 | **M3** 爬虫 | `fetch_page`（x/net/html + 提取 + 并行下载） | ⏳ | 发任意文章 URL → 图片 + PDF 到飞书 |
 | **M4** nhentai | v2 客户端 + `fetch_hentai`（id/query/page）+ zip 模式 + CDN 阶梯 | ✅ ch29 | "抓 nh 12345" / "搜 sonohara" / "翻第 N 页最新" → 封面 + 整本 zip |

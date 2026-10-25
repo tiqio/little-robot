@@ -79,12 +79,15 @@ func (t *ImageTool) Definition() schema.ToolDefinition {
 		Name: t.Name(),
 		Description: `获取一张图片存到工作区，并把图片回传给你"看"，随后用 send 发给用户。
 
+适用：用户要**一张图**（壁纸/角色图/实拍照片/色图）。
+用户要**整本**多页的本子/同人集，或贴了 nhentai.net 链接 → 用 fetch_hentai，别在这里搜。
+
 用法（二选一）：
 A. keyword：按关键词搜现成照片，只用三个可信源，依次尝试：
    Pexels（质量最好，需 key）→ Openverse（Flickr 等 CC 实拍）→ Wikimedia Commons（CC）。
    关键词用英文、具体（golden retriever、office desk、server room）。
    三个源都找不到就返回失败，**不会拿无关的随机图凑数**。
-B. url：下载指定 https 直链（域名需白名单）。
+B. url：下载指定 https 图片直链（域名需白名单；自动走代理，图会回传给你看）。
    只有用户明确要求"生成/画"时，才用 https://image.pollinations.ai/prompt/<英文描述>。
 
 source=anime（二次元）：走 yande.re/Danbooru/Safebooru/nekos.best/Konachan。

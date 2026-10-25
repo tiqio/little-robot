@@ -24,8 +24,9 @@ func (t *ViewImageTool) Name() string { return "view_image" }
 func (t *ViewImageTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name: t.Name(),
-		Description: "查看工作区里的一张图片（png/jpg/webp/gif），图片会作为消息回传给你。" +
-			"用于确认图片内容是否符合要求，或查看用户提供的截图。不要用它发送图片（要发给用户用 send）。",
+		Description: "查看工作区里的一张本地图片（jpg/png/webp/gif）：图片会回传给你，但**用户看不到**——只进你的眼睛。" +
+			"用于确认「这张图对不对」，或看用户发来的截图。要交付给用户请用 send。" +
+			"fetch_image 下载时图已经回传过，一般不用再看一次。",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

@@ -113,7 +113,7 @@ cmd.Dir = 新目录
 
 只决定**起始**目录。命令里 `cd /Users/dd/AITEST/little-robot && git checkout .` 照样跑得出去。
 
-- 文件类工具（`read_file` / `write_file` / `edit_file` / `send_image` / `fetch_image` / `view_image`）
+- 文件类工具（`read_file` / `write_file` / `edit_file` / `send` / `fetch_image` / `fetch_hentai` / `view_image`）
   受 `resolvePath` 约束，**跑不出目录**；
 - `bash` 只受起始目录约束，**真正的越权防护要靠 `guard` + 沙箱策略**。
 
