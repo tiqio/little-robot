@@ -74,6 +74,14 @@ A. keyword：按关键词搜现成照片，只用三个可信源，依次尝试�
 B. url：下载指定 https 直链（域名需白名单）。
    只有用户明确要求"生成/画"时，才用 https://image.pollinations.ai/prompt/<英文描述>。
 
+source=anime（二次元）：走 Danbooru/Safebooru/nekos.best。
+   - keyword **只要给角色名或一个特征**（nahida、cat_ears、blue_hair），
+     工具会自动解析成规范标签（nahida → nahida_(genshin_impact)）。
+   - 不要堆叠多个条件：Danbooru 匿名搜索最多 2 个标签，写多了只会得到空结果，
+     而"空结果"不代表没这张图，只代表标签组合太窄。
+   - 只返回 SFW（强制 rating:general），r18/nsfw 之类的词会被忽略。
+   - 返回里会写「实际标签：xxx」，看清它再去调整关键词，不要盲目换词重试。
+
 【必须看图确认】拿到图后你要先判断它是否符合用户要求：
 - 符合 → 调 send_image 发送；
 - 不符合（内容不对、太糊、明显是无关图）→ 换下一个候选 url 重新 fetch_image，
@@ -447,26 +455,52 @@ func fileToDataURL(path string) (string, error) {
 
 // ---- 二次元图源 ----
 
-// Danbooru：标签最全，强制 rating:general 保证 SFW
+// Danbooru：标签最全，强制 rating:general 保证 SFW。
+//
+// 关键：Danbooru 只认**规范标签**（nahida_(genshin_impact)），不认自由文本。
+// 模型天然会写 "nahida genshin_impact r18"，直接拼成 tags 会得到 0 条（HTTP 200 + 空数组），
+// 于是它换着关键词重试，越加越多、结果永远为空。所以这里先做一次标签解析。
 func searchDanbooru(ctx context.Context, keyword string) ([]imageCandidate, error) {
-	tags := strings.ReplaceAll(strings.TrimSpace(keyword), " ", "_")
+	tags := danbooruTags(ctx, keyword)
+
 	q := url.Values{}
 	q.Set("tags", "rating:general "+tags)
 	q.Set("limit", "8")
 
 	data, _, err := netutil.Fetch(ctx, "https://danbooru.donmai.us/posts.json?"+q.Encode(), 4<<20)
 	if err != nil {
-		return nil, fmt.Errorf("Danbooru 搜索失败：%w", err)
+		// 422 多半是 tag 太多（匿名上限 2 个）→ 只留第一个再试一次
+		fields := strings.Fields(tags)
+		if len(fields) > 1 {
+			q.Set("tags", "rating:general "+fields[0])
+			if d2, _, err2 := netutil.Fetch(ctx, "https://danbooru.donmai.us/posts.json?"+q.Encode(), 4<<20); err2 == nil {
+				data, err = d2, nil
+			}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("Danbooru 搜索失败：%w", err)
+		}
 	}
 
-	var posts []struct {
-		LargeFileURL  string `json:"large_file_url"`
-		SampleFileURL string `json:"sample_file_url"`
-		FileURL       string `json:"file_url"`
-		TagString     string `json:"tag_string_character"`
+	posts, err := parseDanbooruPosts(data)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(data, &posts); err != nil {
-		return nil, fmt.Errorf("解析 Danbooru 响应失败：%w", err)
+
+	// 一条都没有：把标签拆开，只用最"重"的那个再试一次。
+	// 原因是模型经常叠加多个条件（角色+发色+服装），交集直接为空。
+	if len(posts) == 0 {
+		first := strings.Fields(tags)
+		if len(first) > 1 {
+			q.Set("tags", "rating:general "+first[0])
+			if data, _, err := netutil.Fetch(ctx, "https://danbooru.donmai.us/posts.json?"+q.Encode(), 4<<20); err == nil {
+				posts, _ = parseDanbooruPosts(data)
+			}
+		}
+	}
+	if len(posts) == 0 {
+		return nil, fmt.Errorf("Danbooru 没有同时匹配「%s」的图（已强制 SFW）。"+
+			"换更常见的标签，比如只给角色名或只给一个特征", tags)
 	}
 
 	var out []imageCandidate
@@ -483,15 +517,97 @@ func searchDanbooru(ctx context.Context, keyword string) ([]imageCandidate, erro
 		}
 		src := "Danbooru"
 		if p.TagString != "" {
-			tags := strings.ReplaceAll(p.TagString, " ", "_")
-			if len(tags) > 60 {
-				tags = tags[:60] + "…"
+			t := strings.ReplaceAll(p.TagString, " ", "_")
+			if len(t) > 60 {
+				t = t[:60] + "…"
 			}
-			src += "（" + tags + "）"
+			src += "（" + t + "）"
 		}
-		out = append(out, imageCandidate{URL: u, Source: src, License: "同人图，请勿商用"})
+		out = append(out, imageCandidate{URL: u, Source: src + "｜实际标签：" + tags, License: "同人图，请勿商用"})
 	}
 	return out, nil
+}
+
+type danbooruPost struct {
+	LargeFileURL  string `json:"large_file_url"`
+	SampleFileURL string `json:"sample_file_url"`
+	FileURL       string `json:"file_url"`
+	TagString     string `json:"tag_string_character"`
+}
+
+func parseDanbooruPosts(data []byte) ([]danbooruPost, error) {
+	var posts []danbooruPost
+	if err := json.Unmarshal(data, &posts); err != nil {
+		return nil, fmt.Errorf("解析 Danbooru 响应失败：%w", err)
+	}
+	return posts, nil
+}
+
+// danbooruTags 把自由文本（"nahida genshin_impact r18"）解析成规范标签。
+// 做法：每个词去 /tags.json 搜前缀，按 post_count 挑最热门的那个；
+// 明确限制级的关键词直接丢掉——本工具只出 SFW。
+func danbooruTags(ctx context.Context, keyword string) string {
+	skip := map[string]bool{
+		"r18": true, "nsfw": true, "explicit": true, "rating": true,
+		"hentai": true, "lewd": true, "sexy": true,
+	}
+
+	words := strings.Fields(strings.ToLower(keyword))
+	var picked []string
+	for _, w := range words[:min(len(words), 4)] {
+		if skip[w] || len([]rune(w)) < 3 {
+			continue
+		}
+		if tag := bestDanbooruTag(ctx, w); tag != "" {
+			picked = append(picked, tag)
+		}
+	}
+	if len(picked) == 0 {
+		return strings.ReplaceAll(strings.TrimSpace(keyword), " ", "_")
+	}
+	// Danbooru 匿名搜索最多 2 个 tag，第 3 个直接 422。
+	// 保留第一个（通常是角色名，最具体）+ 热度最高的那个。
+	if len(picked) > 2 {
+		picked = []string{picked[0], picked[len(picked)-1]}
+	}
+	return strings.Join(picked, " ")
+}
+
+// bestDanbooruTag 在**所有分类**里找前缀匹配，取 post_count 最高的。
+//
+// 不要限定 category=4（角色）：实测 "green_hair" 会匹配到一个冷门角色
+// green_haired_cure_(...)，而真正的通用标签 green_hair 有 60 万张。
+// 让"热度"自己说话就够了：
+//
+//	nahida         → nahida_(genshin_impact)  13642
+//	green_hair     → green_hair              607162
+//	genshin_impact → genshin_impact          321654
+func bestDanbooruTag(ctx context.Context, word string) string {
+	q := url.Values{}
+	q.Set("search[name_matches]", word+"*")
+	q.Set("search[order]", "count")
+	q.Set("limit", "5")
+
+	data, _, err := netutil.Fetch(ctx, "https://danbooru.donmai.us/tags.json?"+q.Encode(), 1<<20)
+	if err != nil {
+		return ""
+	}
+
+	var tags []struct {
+		Name      string `json:"name"`
+		PostCount int    `json:"post_count"`
+	}
+	if err := json.Unmarshal(data, &tags); err != nil {
+		return ""
+	}
+
+	best, bestCount := "", 0
+	for _, t := range tags {
+		if t.PostCount > bestCount {
+			best, bestCount = t.Name, t.PostCount
+		}
+	}
+	return best
 }
 
 // Safebooru：全站 SFW，无需 rating 过滤

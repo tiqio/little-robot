@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 
 	"little-robot/internal/version"
 )
@@ -26,7 +27,7 @@ func handleArgs(args []string, stdout, stderr io.Writer) (opts options, handled 
 
 	var showVersion bool
 	fs.StringVar(&opts.Prompt, "p", "", "要执行的任务，例如-p 修一下docs里的错别字")
-	fs.StringVar(&opts.Dir, "dir", ".", "工作区目录")
+	fs.StringVar(&opts.Dir, "dir", os.Getenv("ROBOT_WORKDIR"), "工作区目录（默认取 ROBOT_WORKDIR，未设置则 .）")
 	fs.StringVar(&opts.SessionID, "session", "local", "会话ID，同名会话接着上次的历史继续")
 	fs.BoolVar(&opts.Think, "think", false, "开启两阶段慢思考（先规划再动手）")
 	fs.BoolVar(&opts.Plan, "plan", true, "开启计划模式，让Agent维护PLAN.md/TODO.md（-plan=false关闭）")

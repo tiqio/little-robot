@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
+	"little-robot/internal/app"
 	"little-robot/internal/config"
 	"little-robot/internal/engine"
 	"little-robot/internal/feishu"
-	"little-robot/internal/provider"
 	"little-robot/internal/tools"
 	"log"
 	"os"
@@ -15,11 +15,10 @@ import (
 func main() {
 	_ = config.LoadEnvFile(".env")
 
-	apiKey := os.Getenv("DEEPSEEK_API_KEY")
 	appID := os.Getenv("FEISHU_APP_ID")
 	appSecret := os.Getenv("FEISHU_APP_SECRET")
-	if apiKey == "" || appID == "" || appSecret == "" {
-		log.Fatal("需要 DEEPSEEK_API_KEY / FEISHU_API_ID / FEISHU_APP_SECRET")
+	if appID == "" || appSecret == "" {
+		log.Fatal("需要 FEISHU_APP_ID / FEISHU_APP_SECRET")
 	}
 
 	// 飞书带来的任务不能放在代码仓库里，单独开工作区
@@ -30,11 +29,9 @@ func main() {
 	workDir, _ = filepath.Abs(workDir)
 	log.Printf("[Bot] 工作区：%s", workDir)
 
-	p := provider.NewDeepSeekProvider(
-		apiKey,
-		config.Get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-		config.Get("DEEPSEEK_MODEL", "deepseek-flash"),
-	)
+	// 模型可切：LLM_PROVIDER=lmstudio 就用本地 LM Studio，否则走 DeepSeek
+	llm := app.NewLLM()
+	p := llm.Provider
 
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(workDir))
@@ -46,6 +43,7 @@ func main() {
 	registry.Register(tools.NewViewImageTool(workDir))
 
 	eng := engine.NewAgentEngine(p, registry, workDir, false)
+	eng.SetContextTokens(llm.ContextTokens)
 
 	bot := feishu.NewBot(appID, appSecret, eng)
 	if err := bot.Start(context.Background()); err != nil {

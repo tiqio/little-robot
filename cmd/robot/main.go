@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"little-robot/internal/app"
 	"little-robot/internal/config"
 	"little-robot/internal/engine"
 	"little-robot/internal/provider"
@@ -138,21 +139,11 @@ func main() {
 		log.Printf("没有读到.env（%v），将只用系统环境变量", err)
 	}
 
-	apiKey := os.Getenv("DEEPSEEK_API_KEY")
-	if apiKey == "" {
-		log.Fatal("DEEPSEEK_API_KEY没有设置，检查.env")
-	}
+	llm := app.NewLLM()
+	p := llm.Provider
+	modelName := llm.Model
 
-	baseURL := config.Get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-	modelName := config.Get("DEEPSEEK_MODEL", "deepseek-flash")
-
-	p := provider.NewDeepSeekProvider(
-		apiKey,
-		baseURL,
-		modelName,
-	)
-
-	tracker := observability.NewCostTracker(p, modelName, observability.PriceForNow(time.Now()))
+	tracker := observability.NewCostTracker(p, modelName, llm.Price)
 	defer func() {
 		log.Println(tracker.Report())
 	}()
@@ -188,6 +179,7 @@ func main() {
 	// eng := engine.NewAgentEngine(&mockProvider{}, &mockRegistry{}, workDir, true)
 	//eng := engine.NewAgentEngine(p, registry, workDir, false)
 	eng := engine.NewAgentEngine(tracker, registry, workDir, opts.Think)
+	eng.SetContextTokens(llm.ContextTokens)
 	eng.PlanMode = opts.Plan // 打开计划模式
 
 	// 主注册表：在原有工具之外，多一个“派子代理”，但是这个时候需要eng来RunSub

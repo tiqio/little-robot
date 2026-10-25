@@ -2,28 +2,26 @@ package main
 
 import (
 	"context"
+	"little-robot/internal/app"
 	"little-robot/internal/config"
 	"little-robot/internal/engine"
 	"little-robot/internal/feishu"
 	"little-robot/internal/guard"
 	"little-robot/internal/observability"
-	"little-robot/internal/provider"
 	"little-robot/internal/session"
 	"little-robot/internal/tools"
 	"log"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 func main() {
 	_ = config.LoadEnvFile(".env")
 
-	apiKey := os.Getenv("DEEPSEEK_API_KEY")
 	appID := os.Getenv("FEISHU_APP_ID")
 	appSecret := os.Getenv("FEISHU_APP_SECRET")
-	if apiKey == "" || appID == "" || appSecret == "" {
-		log.Fatal("需要 DEEPSEEK_API_KEY / FEISHU_APP_ID / FEISHU_APP_SECRET")
+	if appID == "" || appSecret == "" {
+		log.Fatal("需要 FEISHU_APP_ID / FEISHU_APP_SECRET")
 	}
 
 	// 1. 工作区：飞书来的任务绝对不能落在代码仓库里面
@@ -31,9 +29,9 @@ func main() {
 	log.Printf("[AgentOps] 工作区：%s", workDir)
 
 	// 2. 大脑+成本观测（装饰器）
-	model := config.Get("DEEPSEEK_MODEL", "deepseek-flash")
-	p := provider.NewDeepSeekProvider(apiKey, config.Get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), model)
-	tracker := observability.NewCostTracker(p, model, observability.PriceForNow(time.Now()))
+	llm := app.NewLLM()
+	p := llm.Provider
+	tracker := observability.NewCostTracker(p, llm.Model, llm.Price)
 
 	// 3. 手脚：主注册表挂只读+写+Shell，统一过DenyApprover
 	registry := tools.NewRegistry()
@@ -54,6 +52,7 @@ func main() {
 
 	// 5. 心脏
 	eng := engine.NewAgentEngine(tracker, registry, workDir, false)
+	eng.SetContextTokens(llm.ContextTokens)
 	//eng.PlanMode = true
 	registry.Register(tools.NewSubagentTool(eng, subReg))
 

@@ -38,6 +38,31 @@ type AgentEngine struct {
 }
 
 // 构造函数
+// charsPerToken 是"字符数→token"的保守换算：
+// 中文约 1 字/token，英文约 4 字符/token，取 2 留余量（宁可早压，也别等报超窗）。
+const charsPerToken = 2
+
+// contextFillRatio 只用窗口的 75%：剩下 25% 留给输出和工具结果
+const contextFillRatio = 0.75
+
+func defaultMaxChars(contextTokens int) int {
+	if contextTokens <= 0 {
+		contextTokens = 128 * 1024
+	}
+	return int(float64(contextTokens) * contextFillRatio * charsPerToken)
+}
+
+// SetContextTokens 按模型上下文窗口重设压缩阈值。
+// 窗口越大能留的原话越多；本地模型窗口小（或跑不动大窗口）时必须调小。
+func (e *AgentEngine) SetContextTokens(contextTokens int) {
+	keep := 36
+	if e.compactor != nil {
+		keep = e.compactor.RetainLast
+	}
+	e.compactor = session.NewCompactor(defaultMaxChars(contextTokens), keep)
+	log.Printf("[Engine] 上下文窗口 %d tokens，压缩阈值 %d 字符", contextTokens, e.compactor.MaxChars)
+}
+
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, enableThinking bool) *AgentEngine {
 	return &AgentEngine{
 		provider:       p,
@@ -46,7 +71,7 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 		EnableThinking: enableThinking,
 		PlanMode:       false,
 		composer:       prompt.NewComposer(workDir),
-		compactor:      session.NewCompactor(200000, 36),
+		compactor:      session.NewCompactor(defaultMaxChars(128*1024), 36),
 		reminder:       NewReminder(),
 	}
 }

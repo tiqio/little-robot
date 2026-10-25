@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-var _ LLMProvider = &DeepSeekProvider{}
+var _ LLMProvider = &OpenAIProvider{}
 
 // ===== 线格式（DeepSeek/OpenAI兼容协议）=====
 
@@ -69,8 +69,9 @@ type chatToolFunc struct {
 }
 
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
+	Model     string        `json:"model"`
+	MaxTokens int           `json:"max_tokens,omitempty"`
+	Messages  []chatMessage `json:"messages"`
 	// Tools    []chatTool    `json:"tols,omitempty"` 发现这里没有调用Tool是因为没有传过去，为什么这里一点错误都不报？因为tag是字符串，编译器不检查内容，它不知道自己有get_weather，只能说“我查不出实时天气”，这是最危险的一类bug：静默失效，看prompt token能发现这里涨了很多
 	Tools []chatTool `json:"tools,omitempty"`
 }
@@ -91,29 +92,67 @@ type chatResponse struct {
 	} `json:"error"` // 将这个Error弄成一个指针，当Error为nil的时候GO在生成JSON的时候会完全去除error建，如果加上了omitempty，当Token为0的时候，Go会在序列化JSON的时候直接删除这个字段，如果存在并有内容，Go解码后的resp.Error会指向新分配结构体的指针
 }
 
-type DeepSeekProvider struct {
-	apiKey  string
-	baseURL string
-	model   string
-	client  *http.Client
+// Config 描述一个 OpenAI 兼容端点。
+// DeepSeek、LM Studio、vLLM、Ollama(/v1) 都走同一套协议，差别只在
+// baseURL / 鉴权 / 超时 —— 这些差异全收在这里，Generate 一份就够。
+type Config struct {
+	Name      string        // 日志与错误里显示的名字
+	BaseURL   string        // 例如 https://api.deepseek.com 或 http://127.0.0.1:1234/v1
+	APIKey    string        // 空 = 不发 Authorization（本地服务通常不校验）
+	Model     string        // 模型 id
+	Timeout   time.Duration // 单次请求上限
+	MaxTokens int           // 单次回复上限；本地小模型容易"想太多"，必须设
 }
 
-func NewDeepSeekProvider(apiKey, baseURL, model string) *DeepSeekProvider {
-	return &DeepSeekProvider{
-		apiKey:  apiKey,
-		baseURL: strings.TrimRight(baseURL, "/"),
-		model:   model,
-		client: &http.Client{
-			Timeout: 120 * time.Second,
+type OpenAIProvider struct {
+	cfg    Config
+	client *http.Client
+}
+
+func NewOpenAI(cfg Config) *OpenAIProvider {
+	if cfg.Name == "" {
+		cfg.Name = "openai"
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = 120 * time.Second
+	}
+	return &OpenAIProvider{
+		cfg: Config{
+			Name:      cfg.Name,
+			BaseURL:   strings.TrimRight(cfg.BaseURL, "/"),
+			APIKey:    cfg.APIKey,
+			Model:     cfg.Model,
+			MaxTokens: cfg.MaxTokens,
 		},
+		client: &http.Client{Timeout: cfg.Timeout},
 	}
 }
 
-func (p *DeepSeekProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+// NewDeepSeekProvider 保留原签名，云端走这条
+func NewDeepSeekProvider(apiKey, baseURL, model string) *OpenAIProvider {
+	return NewOpenAI(Config{
+		Name: "deepseek", BaseURL: baseURL, APIKey: apiKey, Model: model,
+		Timeout: 120 * time.Second,
+	})
+}
+
+// NewLMStudioProvider 本地 LM Studio：默认不需要 key，但首次加载 27B 模型可能很慢，
+// 所以超时给到 10 分钟；真正的上限由 ctx 控制。
+func NewLMStudioProvider(baseURL, model string) *OpenAIProvider {
+	return NewOpenAI(Config{
+		Name: "lmstudio", BaseURL: baseURL, APIKey: "", Model: model,
+		Timeout: 10 * time.Minute,
+		// 27B 量化模型在本地约 10~12 tok/s，不限长度时一次"思考"能跑 2000+ token
+		MaxTokens: 1024,
+	})
+}
+
+func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
 	reqBody := chatRequest{
-		Model:    p.model,
-		Messages: toChatMessages(msgs),
-		Tools:    toChatTools(availableTools),
+		Model:     p.cfg.Model,
+		Messages:  toChatMessages(msgs),
+		Tools:     toChatTools(availableTools),
+		MaxTokens: p.cfg.MaxTokens,
 	}
 
 	raw, err := json.Marshal(reqBody)
@@ -127,16 +166,19 @@ func (p *DeepSeekProvider) Generate(ctx context.Context, msgs []schema.Message, 
 	}
 
 	// 注意NewRequestWithContext: ctx在这里第一次生效，ctx支持超时限制，主动取消以及链路追踪
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.cfg.BaseURL+"/chat/completions", bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("构造请求失败：%w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	// 本地服务通常不校验 key，空值就别发空 Bearer（有些实现会因此 401）
+	if p.cfg.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+	}
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("请求DeepSeek失败：%w", err)
+		return nil, fmt.Errorf("请求%s失败：%w", p.cfg.Name, err)
 	}
 	defer resp.Body.Close()
 

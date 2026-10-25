@@ -15,13 +15,24 @@ gitignore：
 ### .env
 
 ```
-DEEPSEEK_API_KEY=sk-xxx
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-flash
-LLM_REQUEST_DEBUG=true
+# true=本地(LM Studio，不需要 key) / false=云端(DeepSeek)
+# 切换模型只改 USE_LOCAL，然后重启进程
+
+# ===== 模型：本地 or 云端 =====
+USE_LOCAL=false
+LOCAL_BASE_URL=http://127.0.0.1:1234/v1
+LOCAL_MODEL=huihui-qwen3.8-27b-abliterated@iq2_s
+REMOTE_BASE_URL=https://api.deepseek.com
+REMOTE_MODEL=deepseek-flash
+REMOTE_API_KEY=sk-xxx
+
+# ===== 飞书 =====
 FEISHU_APP_ID=cli_xxx
 FEISHU_APP_SECRET=xxx
-ROBOT_WORKDIR=xxx (default=./workspace)
+
+# ===== 工作区与调试 =====
+ROBOT_WORKDIR=./workspace
+LLM_REQUEST_DEBUG=false
 ```
 
 ### runner
