@@ -3,10 +3,11 @@
 > 状态（2026-10-25）：
 > - ✅ **M1 文件投递**（ch27）：`send_file` + `FileSender` + `/im/v1/files`，PDF/zip 到飞书客户端
 > - ✅ **M2 NSFW 图源**（ch28）：yande.re 主力 + Danbooru `rating` 开关 + `fetch_image` 新增 `rating` 参数
-> - ✅ **M4 nhentai**（ch29）：`fetch_hentai` 工具（id/URL 直抓、query 搜索、page 翻最新列表）+ zip/images 两种形态
+> - ✅ **M4 nhentai**（ch29/ch37）：`fetch_hentai` 工具（id/URL 直抓、query 搜索、page 翻最新列表）+ pdf/zip/images 三种形态（ch37 起默认 PDF，手机直接预览）
 > - ✅ **工具归一**（ch30/ch31）：`send_image`+`send_file` 合并为 `send`（按扩展名+大小自动路由消息形态）；描述手术（单图/整本决策规则、看/发流水线、bash 少 curl）
 > - ✅ **思考机制重构**（ch32/ch33/ch34）：治"思考吃光额度→静默退出"。S1 finish_reason 透传+空输出救援；S2 思考/行动分家+独立预算；S3 图片降采样+历史图片摘要。详见 `docs/llm-mechanism.md`
-> - ⏳ **M3 通用爬虫** `fetch_page`、**M5 体验增强**（post 网格 / flip 合并 PDF / 限流缓存）、**S4 外置查找**（lookup/web_search）待排期
+> - ⏳ **M3 通用爬虫** `fetch_page`、**M5 体验增强**（post 网格 / 限流缓存）、**S4 外置查找**（lookup/web_search）待排期
+> - ✅ **本子合成 PDF**（ch37）：`internal/pdf` 自研极简 PDF 生成器（每页内嵌 JPEG，不加密），超飞书 30MB 上限自动按页拆分 part1/part2
 >
 > 实现时的实测补充（方案初稿没写到的）：
 > - nhentai v2 的 `POST /galleries/{id}/download`（官方 zip）**需要 API key**（`NHENTAI_API_KEY`），没 key 就逐页下载 + 标准库 `archive/zip` 自己打
@@ -43,7 +44,7 @@
 |---|---|---|
 | A | 飞书里发任意 URL（文章/产品页/漫画页） | 机器人抓整页，提取全部图片 + PDF，图片发 image 消息、PDF 发 file 消息，都在飞书客户端 |
 | B | "给我来张 xxx r18 图" | 走 NSFW 源（yande.re 主力 + Danbooru r18），不再被 SFW 限制 |
-| C | "抓 nh 12345" / "搜 sonohara 的本子" | nhentai v2 API：封面 + 元信息 + 全文，整本一个 zip 文件发过来 |
+| C | "抓 nh 12345" / "搜 sonohara 的本子" | nhentai v2 API：封面 + 元信息 + 全文，整本合成一个 PDF 发过来（不加密，手机可预览） |
 | D | 回归 | 原有 photo / anime(SFW) 行为不变 |
 
 ---
@@ -147,7 +148,8 @@
   - 行为：
     1. 详情 → 先发**封面**（send）+ 标题/作者/标签/页数（imageCarrier 让模型确认是不是用户要的本）；
     2. 搜索模式 → 前 5 个候选（缩略图 + 标题 + 页数），模型挑一个再抓；
-    3. `format=zip`：`POST /download?format=zip` → 官方 zip（≤30MB 直发 `send`；超限降级 images 模式并说明）；
+    3. `format=pdf`（默认）：官方 zip 一条请求取全本 → 内存解压 → `internal/pdf` 合成 PDF；没有 key/官方挂了就逐页下载再拼。超过飞书 30MB 上限自动按页拆成 part1/part2…；
+    4. `format=zip`：`POST /download?format=zip` → 官方 zip（≤30MB 直发 `send`；超限降级 images 模式并说明）；
     4. `format=images`：4 路并行下载 `{image_server}/{path}` → `001.jpg...` → 逐张发（>30 张建议 post 网格，M5）；
     5. 收尾文本：标题 / artist / tags / 页数 / 来源链接。
   - 模型只看封面 + 第 1 页（不灌 100 张图给模型，imageCarrier 32MB/张 的预算省着用）。

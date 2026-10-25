@@ -2,16 +2,21 @@ package tools
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
 	"little-robot/internal/netutil"
+	"little-robot/internal/pdf"
 	"little-robot/internal/schema"
 	"little-robot/internal/sources"
 )
@@ -25,9 +30,9 @@ fetch_hentai：从 nhentai（最大的免费本子库）抓本子。
 - query：搜索模式，返回前 5 个候选（前 3 个封面会回传给模型看），
   挑定后带 id_or_url 再调一次。
 
-format=zip（默认）：整本打包成一个 zip 文件（优先官方下载接口，没 key 就
-逐页下载自己用标准库打 zip）→ 最后用 send 一次发给用户；
-format=images：逐页存成 001.jpg... → 逐张 send（>30 页建议 zip）。
+format=pdf（默认）：整本合成一个 PDF（不加密，手机上直接翻页预览）→ send 一次发齐；
+format=zip：整本打成 zip 压缩包（手机需要解压，只在用户明确要压缩包时用）；
+format=images：逐页存成 001.jpg... → 逐张 send（很刷屏，>30 页别用）。
 */
 
 var _ BaseTool = &FetchHentaiTool{}
@@ -59,9 +64,12 @@ B. query：搜索模式（"sonohara"、"artist:xxx language:english"、"tag:\"bi
 C. page：最新本子列表的第 N 页（对应官网 https://nhentai.net/?page=N，第 1 页 = 最新）。
    用户说"看看今天/最近有什么新本子"就用它，page 不填就是第 1 页。
 
-format（仅 A 用，默认 zip）：
-- zip：整本一个 zip 文件 → send(封面) + send(zip)，一次发齐，推荐；
-- images：逐页 001.jpg... → 逐张 send（页数多时很刷屏，>30 页建议 zip）。
+format（仅 A 用，默认 pdf）：
+- pdf：整本合成一个 PDF → send(封面) + send(pdf)，一次发齐，**推荐**：
+  不加密、手机上直接翻页，比 zip 好用得多；
+- zip：整本打成一个 zip 压缩包 → 手机要先解压，只有用户明确说"要压缩包/zip"才用；
+- images：逐页 001.jpg... → 逐张 send（很刷屏，>30 页别用）。
+整本太大时会自动拆成 xxx-part1.pdf、xxx-part2.pdf，就依次 send 每一份。
 
 发完补一句总结：标题 / 作者 / 页数 / 来源链接（https://nhentai.net/g/<id>/）。`,
 		InputSchema: map[string]interface{}{
@@ -81,8 +89,8 @@ format（仅 A 用，默认 zip）：
 				},
 				"format": map[string]interface{}{
 					"type":        "string",
-					"enum":        []string{"zip", "images"},
-					"description": "zip=整本一个文件（默认）；images=逐页图片",
+					"enum":        []string{"pdf", "zip", "images"},
+					"description": "pdf=整本一个 PDF（默认，手机可直接预览）；zip=压缩包（手机要解压）；images=逐页图片",
 				},
 			},
 		},
@@ -104,12 +112,12 @@ func (t *FetchHentaiTool) Execute(ctx context.Context, args json.RawMessage) (st
 	}
 	format := strings.ToLower(strings.TrimSpace(in.Format))
 	if format == "" {
-		format = "zip"
+		format = "pdf"
 	}
 	switch format {
-	case "zip", "images":
+	case "pdf", "zip", "images":
 	default:
-		return "", fmt.Errorf("format 只能是 zip 或 images，收到 %q", in.Format)
+		return "", fmt.Errorf("format 只能是 pdf / zip / images，收到 %q", in.Format)
 	}
 
 	dir := effectiveWorkDir(ctx, t.workDir)
@@ -181,14 +189,29 @@ func (t *FetchHentaiTool) Execute(ctx context.Context, args json.RawMessage) (st
 			b.WriteString("⚠️ 部分页失败：" + perr.Error() + "\n")
 		}
 		b.WriteString(fmt.Sprintf("页面已存到 %s/001.jpg…（共 %d 页）\n", base, len(paths)))
-		b.WriteString(coverHint + "逐张 send 页面；页多（>30）就告诉用户下次用 zip")
-	default: // zip
+		b.WriteString(coverHint + "逐张 send 页面；页多（>30）就告诉用户下次用 pdf")
+	case "zip":
 		zipRel, zerr := t.makeZip(ctx, dir, base, g)
 		if zerr != nil {
 			return "", zerr
 		}
 		b.WriteString("整本已打包：" + zipRel + "\n")
 		b.WriteString(coverHint + "send(" + zipRel + ") 发整本")
+	default: // pdf：手机上直接翻，不用解压
+		pdfs, perr := t.makePDF(ctx, dir, base, g)
+		if perr != nil {
+			return "", perr
+		}
+		if len(pdfs) == 1 {
+			b.WriteString("整本已合成 PDF：" + pdfs[0] + "\n")
+			b.WriteString(coverHint + "send(" + pdfs[0] + ") 发整本（文件名带上标题和页数）")
+		} else {
+			b.WriteString(fmt.Sprintf("整本较大，已拆成 %d 个 PDF：\n", len(pdfs)))
+			for i, p := range pdfs {
+				b.WriteString(fmt.Sprintf("  %d) %s\n", i+1, p))
+			}
+			b.WriteString(coverHint + "按顺序 send 每一个 PDF（文件名标上 1/N、2/N）")
+		}
 	}
 	return b.String(), nil
 }
@@ -344,7 +367,137 @@ func (t *FetchHentaiTool) makeZip(ctx context.Context, dir, base string, g *sour
 	return rel, nil
 }
 
-// writeZip 把文件按顺序写进一个 zip
+// makePDF 整本做成 PDF：手机上直接翻，不用解压。
+//
+// 两条取材路径：
+//  1. 官方 zip 一条请求拿全本（需要 NHENTAI_API_KEY）→ 内存里解压，省 N 次抓取、也少撞限流；
+//  2. 没有 key 或官方挂了 → 逐页下载，再用这些页拼 PDF。
+//
+// 超过飞书单文件上限就按页拆成 part1/part2…，让模型依次发（不加密，手机能直接预览）。
+func (t *FetchHentaiTool) makePDF(ctx context.Context, dir, base string, g *sources.Gallery) ([]string, error) {
+	var images [][]byte
+
+	if t.cli.HasKey() {
+		if zurl, _, err := t.cli.DownloadURL(ctx, g.ID, "zip"); err == nil {
+			// 官方包是整本原图，上百页也就几十 MB；给到 150MB 足够
+			if data, _, err := netutil.FetchWith(ctx, zurl, netutil.FetchOpt{UA: sources.UserAgent, MaxBytes: 150 << 20}); err == nil {
+				if imgs, zerr := zipPageImages(data); zerr == nil && len(imgs) > 0 {
+					images = imgs
+					log.Printf("[hentai] %d 用官方包拼 PDF（%d 页）", g.ID, len(imgs))
+				}
+			}
+		}
+	}
+
+	if len(images) == 0 {
+		paths, perr := t.downloadAllPages(ctx, dir, base, g)
+		if perr != nil {
+			log.Printf("[hentai] %d 部分页下载失败：%v", g.ID, perr)
+		}
+		for _, p := range paths {
+			if p == "" {
+				continue
+			}
+			data, rerr := os.ReadFile(filepath.Join(dir, p))
+			if rerr != nil {
+				continue
+			}
+			images = append(images, data)
+		}
+		if len(images) == 0 {
+			return nil, fmt.Errorf("一页都没下载成功（%v）", perr)
+		}
+	}
+
+	absBase := filepath.Join(dir, base)
+	parts, err := writePDFParts(absBase, strconv.Itoa(g.ID), images, pdfPartLimit)
+	if err != nil {
+		return nil, err
+	}
+	// 转成相对路径返回给模型（send 要的是工作区相对路径）
+	rels := make([]string, len(parts))
+	for i, p := range parts {
+		r, rerr := filepath.Rel(dir, p)
+		if rerr != nil {
+			return nil, fmt.Errorf("计算相对路径失败：%w", rerr)
+		}
+		rels[i] = r
+	}
+	return rels, nil
+}
+
+// pdfPartLimit 单个 PDF 的体积上限：飞书文件 30MB，留点余量
+const pdfPartLimit = 25 << 20
+
+// writePDFParts 把图片拼成 PDF；超限就按页二分拆成多个 part。
+// 返回生成的文件绝对路径（1 个或 N 个）。
+func writePDFParts(dir, name string, images [][]byte, limit int64) ([]string, error) {
+	whole := filepath.Join(dir, name+".pdf")
+	if err := pdf.BuildImagesFromMemory(whole, images); err != nil {
+		return nil, err
+	}
+	if fi, err := os.Stat(whole); err == nil && fi.Size() <= limit {
+		return []string{whole}, nil
+	}
+	if len(images) == 1 {
+		return nil, fmt.Errorf("单页就超过 %dMB，没法拆（可以改用 format=images）", limit>>20)
+	}
+
+	// 超限：删掉整本，按页对半拆（递归，直到每份都装得下）
+	if err := os.Remove(whole); err != nil {
+		return nil, fmt.Errorf("删除超限 PDF 失败：%w", err)
+	}
+	mid := len(images) / 2
+	var out []string
+	for i, chunk := range [][]([]byte){images[:mid], images[mid:]} {
+		sub, err := writePDFParts(dir, fmt.Sprintf("%s-part%d", name, i+1), chunk, limit)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sub...)
+	}
+	return out, nil
+}
+
+// zipPageImages 从官方 zip 里按文件名顺序取出所有图片页。
+// 官方包结构是 <id>/001.jpg…，按名字排序就是页序。
+func zipPageImages(data []byte) ([][]byte, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, fmt.Errorf("解析 zip 失败：%w", err)
+	}
+	files := make([]*zip.File, 0, len(zr.File))
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(f.Name)) {
+		case ".jpg", ".jpeg", ".png", ".webp", ".gif":
+			files = append(files, f)
+		}
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+
+	out := make([][]byte, 0, len(files))
+	for _, f := range files {
+		rc, oerr := f.Open()
+		if oerr != nil {
+			continue
+		}
+		b, rerr := io.ReadAll(io.LimitReader(rc, 32<<20))
+		rc.Close()
+		if rerr != nil || len(b) == 0 {
+			continue
+		}
+		out = append(out, b)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("zip 里没有图片")
+	}
+	return out, nil
+}
+
+// writeZip 把文件按顺序写进一个 zip（format=zip 用）
 func writeZip(zipPath string, files []string) (err error) {
 	out, cerr := os.Create(zipPath)
 	if cerr != nil {
