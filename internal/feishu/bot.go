@@ -177,9 +177,17 @@ func (b *Bot) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) e
 		// 最小修法，bot里面建立一个共享会话（更好的做法是按照chatID分会话，每个用户共享记忆，但是这里先让它跑通）
 		// 现在改成了chatID，每个群一份记忆，写"feishu-default"会让A群的问题污染B群的答案"
 		sess := b.sessions.GetOrCreateAt(chatID, b.eng.WorkDir, sessDir)
+
+		// 任务边界（ch35）：开始标记先发出，用户手机上立刻知道"收到了，在跑了"
+		reporter.NotifyStart(runCtx)
+		start := time.Now()
 		if err := b.eng.Run(runCtx, sess, text, reporter); err != nil {
 			log.Printf("[Feishu] 引擎出错：%v", err)
-			reporter.NotifyError(context.Background(), err)
+			// 用 Background 而不是 runCtx：runCtx 刚好超时（10分钟）时，
+			// 用 runCtx 发"任务中断"这句话本身也会一起死
+			reporter.NotifyError(context.Background(), err, time.Since(start))
+		} else {
+			reporter.NotifyDone(context.Background(), time.Since(start))
 		}
 
 		// 跑完就落盘：不存的话重启就等于全员失忆

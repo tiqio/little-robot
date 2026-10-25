@@ -11,6 +11,8 @@ import (
 	"little-robot/internal/tools"
 	"log"
 	"os"
+	"sync/atomic"
+	"time"
 )
 
 var _ engine.Reporter = &FeishuReporter{}
@@ -23,10 +25,17 @@ type FeishuReporter struct {
 	// 1. b.sessions.GetOrCreate(chatID, b.eng.WorkDir) 会话记忆按chat分文件
 	// 2. lock := b.lockFor(chatID) 同一个群串行执行
 	// bot管这次运行属于哪个会话，reporter管这条回复挂在哪条消息下面
+	// sink 发送出口：生产是 reply（lark API），测试换成记录器就不碰网络了
+	sink func(ctx context.Context, text string) error
+	// toolCalls 工具调用计数：OnToolCall 在并行 goroutine 里触发，用 atomic 防竞争。
+	// 完成标记里带上它，用户手机上能知道"这次任务干了多大事"。
+	toolCalls atomic.Int64
 }
 
 func NewFeishuReporter(client *lark.Client, messageID string) *FeishuReporter {
-	return &FeishuReporter{client: client, messageID: messageID}
+	r := &FeishuReporter{client: client, messageID: messageID}
+	r.sink = r.reply
+	return r
 }
 
 // OnThinkingStart 思考型模型开始"规划段"时喊一声：
@@ -43,6 +52,7 @@ func (r *FeishuReporter) OnAssistantMessage(ctx context.Context, text string) {
 }
 
 func (r *FeishuReporter) OnToolCall(ctx context.Context, call schema.ToolCall) {
+	r.toolCalls.Add(1)
 	r.send(ctx, "[正在执行] "+call.Name)
 }
 
@@ -58,7 +68,7 @@ func (r *FeishuReporter) send(ctx context.Context, text string) {
 		if n > len(runes) {
 			n = len(runes)
 		}
-		if err := r.reply(ctx, string(runes[:n])); err != nil {
+		if err := r.sink(ctx, string(runes[:n])); err != nil {
 			log.Printf("[Feishu] 回复失败：%v", err)
 			return
 		}
@@ -80,12 +90,55 @@ func (r *FeishuReporter) reply(ctx context.Context, text string) error {
 	return err
 }
 
-func (r *FeishuReporter) NotifyError(ctx context.Context, err error) {
-	r.send(ctx, "[执行出错 ERROR]"+err.Error())
+// ---- 任务边界标记（ch35）----
+// 手机上最焦虑的是"它到底跑完没有"：跑之前不知道开始了，跑完不知道结束了，
+// 于是抢着发下一条消息，撞上"上一个任务还在跑"。三个标记把任务的边界画出来。
+
+// NotifyStart 拿到锁、真正开跑时发：用户在手机上立刻看到"收到了，开始干"
+func (r *FeishuReporter) NotifyStart(ctx context.Context) {
+	r.send(ctx, startMessage())
 }
 
+// NotifyDone 跑完（无论调没调工具）发：用户看到 ✅ 就知道"上一条结束了，可以发下一条"
+func (r *FeishuReporter) NotifyDone(ctx context.Context, elapsed time.Duration) {
+	r.send(ctx, doneMessage(elapsed, r.toolCalls.Load()))
+}
+
+// NotifyError 任务中途挂掉（超时/模型报错）发：也是边界，不然是"死给你看"
+func (r *FeishuReporter) NotifyError(ctx context.Context, err error, elapsed time.Duration) {
+	r.send(ctx, fmt.Sprintf("⚠️ 任务中断（用时%s）：%v", humanDur(elapsed), err))
+}
+
+// NotifyBusy 任务还在跑时又来一条：现在的语义是"这条先放下"（bot 直接丢），
+// 文案把"什么时候能重发"说清楚——等看到 ✅
 func (r *FeishuReporter) NotifyBusy(ctx context.Context) {
-	r.send(ctx, "上一个任务还在跑，稍后再发")
+	r.send(ctx, busyMessage())
+}
+
+// 边界文案抽成纯函数：单测测的就是真正发出去的文本
+func startMessage() string { return "🚀 开始处理…" }
+
+func busyMessage() string { return "⏳ 上一个任务还在跑，看到 ✅ 再重发这条" }
+
+// doneMessage 纯函数，方便单测
+func doneMessage(elapsed time.Duration, toolCalls int64) string {
+	if toolCalls > 0 {
+		return fmt.Sprintf("✅ 完成（%d 次工具调用 · 用时%s）", toolCalls, humanDur(elapsed))
+	}
+	return fmt.Sprintf("✅ 完成（用时%s）", humanDur(elapsed))
+}
+
+// humanDur 人类可读的耗时：<1s / 47s / 1m02s
+func humanDur(d time.Duration) string {
+	if d < time.Second {
+		return "<1s"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	return fmt.Sprintf("%dm%02ds", m, s)
 }
 
 var _ tools.FileSender = &FeishuReporter{}
