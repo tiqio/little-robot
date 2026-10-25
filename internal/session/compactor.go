@@ -2,7 +2,10 @@ package session
 
 import (
 	"fmt"
+	"strings"
+
 	"little-robot/internal/schema"
+
 	"log"
 )
 
@@ -75,6 +78,20 @@ func (c *Compactor) Compact(msgs []schema.Message) []schema.Message {
 			}
 		}
 
+		// 老的图片消息（ch34/S3）：data URL 是 base64，一张几百 KB，
+		// 留在历史里每轮都重新喂给模型。原图还在磁盘上，view_image 能找回来，
+		// 所以历史里留一句"看过图"的占位就够
+		if m.Role == schema.RoleUser && len(m.Images) > 0 && !inWorkingMemory {
+			n := len(m.Images)
+			m.Images = nil
+			note := imageNote(n)
+			if strings.TrimSpace(m.Content) == "" {
+				m.Content = note
+			} else {
+				m.Content += "\n" + note
+			}
+		}
+
 		// 老的推理文本：折叠，带ToolCalls的消息Content可能为空，因此这里仅仅考虑到推理太长的情况
 		if m.Role == schema.RoleAssistant && m.Content != "" && !inWorkingMemory && len(m.Content) > 200 {
 			m.Content = "...[早期推理已折叠]..."
@@ -99,8 +116,18 @@ func (c *Compactor) estimate(msgs []schema.Message) int {
 		for _, tc := range m.ToolCalls {
 			n += len(tc.Name) + len(tc.Arguments)
 		}
+		// 图片是 data URL 字符串，长度约等于它的 token 成本（之前完全没算，
+		// 历史里躺 3 张图 compactor 也看不见，阈值永远不触发）
+		for _, img := range m.Images {
+			n += len(img)
+		}
 	}
 	return n
+}
+
+// imageNote "看过图"的一句话占位：compactor（压历史）和 store（落盘剥图）共用同一句
+func imageNote(n int) string {
+	return fmt.Sprintf("（此处查看过 %d 张图片，已省略图片内容）", n)
 }
 
 // labelOf 给日志用的可读标签：tool:bash / assitant /user

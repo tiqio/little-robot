@@ -68,8 +68,9 @@ type AgentEngine struct {
 // 中文约 1 字/token，英文约 4 字符/token，取 2 留余量（宁可早压，也别等报超窗）。
 const charsPerToken = 2
 
-// contextFillRatio 只用窗口的 75%：剩下 25% 留给输出和工具结果
-const contextFillRatio = 0.75
+// contextFillRatio 只用窗口的 65%：剩下 35% 留给思考段输出（2048）+ 工具结果 + 下一轮。
+// 本地窗口小（32K~128K），宁可早压一点，也别等 prompt 撞墙。
+const contextFillRatio = 0.65
 
 func defaultMaxChars(contextTokens int) int {
 	if contextTokens <= 0 {

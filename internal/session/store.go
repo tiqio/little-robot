@@ -55,7 +55,7 @@ func (s *Session) Save(dir string) (string, error) {
 		}
 		n := len(hist[i].Images)
 		hist[i].Images = nil
-		note := fmt.Sprintf("（此处查看过 %d 张图片，已省略图片内容）", n)
+		note := imageNote(n) // 和 compactor 同一句话，模型在两个地方看到的占位一致
 		if strings.TrimSpace(hist[i].Content) == "" {
 			hist[i].Content = note
 		} else {

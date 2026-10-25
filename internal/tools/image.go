@@ -488,6 +488,14 @@ func fileToDataURL(path string) (string, error) {
 	default:
 		return "", fmt.Errorf("不支持的图片格式 %s", ctype)
 	}
+
+	// 摘要（ch34/S3）：大图降采样成 768px JPEG 再进上下文，原图留盘。
+	// 之前原图 base64 直接进历史，一张 3MB 的图 ≈ 几万 token，每轮都重新喂一遍。
+	if len(data) > carrierMinBytes {
+		if scaled, ok := downscaleToJPEG(data, carrierMaxDim); ok {
+			return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(scaled), nil
+		}
+	}
 	return "data:" + ctype + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 

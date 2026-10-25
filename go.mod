@@ -2,7 +2,10 @@ module little-robot
 
 go 1.27.0
 
-require github.com/larksuite/oapi-sdk-go/v3 v3.12.2
+require (
+	github.com/larksuite/oapi-sdk-go/v3 v3.12.2
+	golang.org/x/image v0.47.0
+)
 
 require (
 	github.com/gogo/protobuf v1.3.2 // indirect

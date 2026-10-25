@@ -5,7 +5,8 @@
 > - ✅ **M2 NSFW 图源**（ch28）：yande.re 主力 + Danbooru `rating` 开关 + `fetch_image` 新增 `rating` 参数
 > - ✅ **M4 nhentai**（ch29）：`fetch_hentai` 工具（id/URL 直抓、query 搜索、page 翻最新列表）+ zip/images 两种形态
 > - ✅ **工具归一**（ch30/ch31）：`send_image`+`send_file` 合并为 `send`（按扩展名+大小自动路由消息形态）；描述手术（单图/整本决策规则、看/发流水线、bash 少 curl）
-> - ⏳ **M3 通用爬虫** `fetch_page`、**M5 体验增强**（post 网格 / flip 合并 PDF / 限流缓存）待排期
+> - ✅ **思考机制重构**（ch32/ch33/ch34）：治"思考吃光额度→静默退出"。S1 finish_reason 透传+空输出救援；S2 思考/行动分家+独立预算；S3 图片降采样+历史图片摘要。详见 `docs/llm-mechanism.md`
+> - ⏳ **M3 通用爬虫** `fetch_page`、**M5 体验增强**（post 网格 / flip 合并 PDF / 限流缓存）、**S4 外置查找**（lookup/web_search）待排期
 >
 > 实现时的实测补充（方案初稿没写到的）：
 > - nhentai v2 的 `POST /galleries/{id}/download`（官方 zip）**需要 API key**（`NHENTAI_API_KEY`），没 key 就逐页下载 + 标准库 `archive/zip` 自己打
