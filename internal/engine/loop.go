@@ -72,10 +72,16 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 	ctx, root := observability.StartSpan(ctx, "run") // root挂进ctx，同时ctx被替换，一路传到registry.Execute，从ctx里面取得root，append成它的孩子
 	root.Set("session", s.ID)
 	root.Set("workdir", e.WorkDir)
+	root.Set("chat", rs.ChatName)
 	root.Set("prompt_len", len(userPrompt))
 	defer func() {
 		root.End()
-		path, err := root.Save(filepath.Join(e.WorkDir, ".claw", "traces"))
+		traceDir := e.WorkDir
+		if rs.WorkDir != "" {
+			traceDir = rs.WorkDir // 优先跟着群走
+		}
+		//path, err := root.Save(filepath.Join(e.WorkDir, ".claw", "traces"))
+		path, err := root.Save(filepath.Join(traceDir, ".claw", "traces"))
 		if err != nil {
 			log.Printf("[Trace] 落盘失败：%v", err)
 			return
@@ -199,6 +205,7 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 }
 
 // 为什么要engine自己NewComposer而不是从外层注入？因为这样构造函数少一个参数，代价是engine和文件系统耦合了——要单测Run就得准备真实目录
+// RunOnce全程没有Trace，所以不需要更改，自己维护history
 func (e *AgentEngine) RunOnce(ctx context.Context, userPrompt string, reporter Reporter) error {
 	// 一处都低，后面就不用每个回调都判空；漏判一处就是panic
 	if reporter == nil {

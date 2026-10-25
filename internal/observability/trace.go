@@ -73,7 +73,14 @@ func (s *Span) Save(dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("创建trace目录失败：%w", err)
 	}
-	name := fmt.Sprintf("trace-%s.json", s.StartTime.Format("20060102-150405.000"))
+	// 每次Run写一个文件，不是一个会话一个文件
+	//name := fmt.Sprintf("trace-%s.json", s.StartTime.Format("20060102-150405.000"))
+	prefix := ""
+	if v, ok := s.Attrs["chat"].(string); ok && v != "" {
+		prefix = "-" + v // 带上群名称
+	}
+	name := fmt.Sprintf("trace%s-%s.json", prefix, s.StartTime.Format("20060102-150405.000"))
+
 	path := filepath.Join(dir, name)
 
 	b, err := json.MarshalIndent(s, "", " ")

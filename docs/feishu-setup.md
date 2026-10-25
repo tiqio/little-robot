@@ -61,7 +61,7 @@
 
 - [ ] 「添加应用能力」→ **机器人** → 添加 / 启用
 
-### 1.4 开权限（**5 条，分三层**）
+### 1.4 开权限（**6 条，分三层**）
 
 「权限管理」→「开通权限」→ 按**中文名称**搜索（按 code 搜反而不准）→ 勾选 →「确认开通权限」。
 ⚠️ 页面右上角有两个 tab，**确认自己在「应用身份权限」下**。
@@ -89,10 +89,13 @@
 | # | 权限 code | 名称 | 对应场景 |
 |---|---|---|---|
 | 5 | `im:message.group_msg` | 获取**群组中所有消息**（**敏感权限**） | 群里**不 @** 也响应 |
+| 6 | `im:chat:readonly` | 获取**群组信息**（群名、群类型） | 把会话工作目录命名成群名（`chats/dd-f1a826`），比 `oc_xxx` 可读 |
 
-> **敏感在哪**：它让应用能读到群里的全部聊天记录，哪怕没 @ 它。商店应用上架时大概率被驳回；自建应用 + 免审团队一般能一键开通。
+> **`group_msg` 敏感在哪**：它让应用能读到群里的全部聊天记录，哪怕没 @ 它。商店应用上架时大概率被驳回；自建应用 + 免审团队一般能一键开通。
 >
 > **为什么不用 `group_msg:include_bot:readonly`**：那条会连**机器人自己发的消息**一起推，容易形成自触发循环。用 `group_msg` 天然避开了这个坑。
+>
+> **`im:chat:readonly` 还顺带解决两件事**：列群（`GET /im/v1/chats`）、判断机器人在不在某个群。缺它时这些接口一律返回 `99991672`。
 
 #### 三条路线，按需选
 
@@ -101,6 +104,9 @@
 | 只能单聊 | 1 + 2 + 3 | 3 |
 | 单聊 + 群里 @ | 1 + 2 + 3 + 4 | 4 |
 | 单聊 + 群里不 @ 也回 | 1 + 2 + 3 + 4 + 5 | 5 |
+| 想要可读的工作目录名 | 再加 6（`im:chat:readonly`） | 6 |
+
+> 权限条数不是越多越好：**只开你真正调用的接口**。`im:chat:readonly` 是"体验优化"，不是"能力前提"——不开也能跑，只是目录叫 `oc_xxx`。
 
 ### 1.5 事件订阅（必须点保存）
 
@@ -168,7 +174,7 @@ if deref(msg.ChatType) == "group" && chatID != os.Getenv("AGENTOPS_CHAT_ID") {
 
 ---
 
-## 2. 代码结构（三块）
+## 2. 代码结构
 
 | 文件 | 职责 | 依赖方向 |
 |---|---|---|
@@ -177,8 +183,29 @@ if deref(msg.ChatType) == "group" && chatID != os.Getenv("AGENTOPS_CHAT_ID") {
 | `internal/feishu/bot.go` | 收事件 → 去重 → 会话串行 → 后台跑 `eng.Run` | feishu → engine |
 | `internal/guard/deny.go` | 无人值守审批器：高危操作一律拒绝 | guard → tools |
 | `internal/session/store.go` | 会话落盘 `.claw/sessions/<id>.json`，支持断点续传 | session |
+| `internal/runstate/runstate.go` | **本次运行**的可变状态（工作目录覆盖 / 方案 / 审批），走 ctx 传，不落盘 | 谁都不依赖 |
+| `internal/worktree/worktree.go` | `git worktree` 管理：按任务开目录 + 分支，能 diff 能丢弃 | 只依赖 git |
 | `cmd/bot/main.go` | **最小示例**：只有 provider + 四个工具 | 同时认识两边 |
 | `cmd/agentops/main.go` | **生产形态**：tracker + guard + 子代理 + 持久会话 | 同时认识两边 |
+
+### 工作目录怎么分（多群不互相踩）
+
+详见 [工作目录隔离](./workdir-isolation.md)。一句话版本：
+
+```
+session.Session  = 档案柜（跨消息、跨重启）
+engine.RunState  = 台面（只在一次 Run 内有效，比如这次在哪个目录干活）
+```
+
+`internal/feishu/bot.go` 每条消息进来先算目录：
+
+```go
+rs := runstate.New()
+rs.WorkDir = b.workDirFor(ctx, chatID)   // chats/<群名>-<短id>，或 .worktrees/chat-...
+runCtx = runstate.With(runCtx, rs)
+```
+
+工具侧统一走 `effectiveWorkDir(ctx, t.workDir)` 取目录——**子代理自动继承**，因为它拿的是同一个 ctx。
 
 ### 四个必须处理的工程点
 
@@ -233,7 +260,7 @@ go run ./cmd/bot
 
 ---
 
-## 4. 十个坑
+## 4. 十三个坑
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
@@ -247,6 +274,9 @@ go run ./cmd/bot
 | 开了 `group_msg` 后群里每句话都在烧钱 | 群消息全量推送 | 加 `AGENTOPS_CHAT_ID` 白名单，或退回「只 @ 模式」 |
 | 机器人对闲聊认真作答、刷屏 | 全量模式没有意图判断 | 同上；或改用关键词前缀（`robot:`） |
 | 机器人回复自己、无限循环 | 开了 `group_msg:include_bot:readonly` | 改回 `group_msg`（不含机器人消息） |
+| 群改名后工作目录"空了" | 目录名跟着群名变，老文件留在旧目录 | 用 `chats.json` 固化映射，首次命名后不再变 |
+| 目录名建不出来 | 群名里有 `/`、`:`、emoji | 名字清洗：只留中英文/数字/`-_`，其余转 `-` |
+| worktree 一直不启用 | 工作区不是 **git 仓库根**（只是仓库里的子目录） | 正常现象，自动降级为 `chats/` 子目录；要用 worktree 就把工作区指到独立仓库 |
 
 ### 一个隐蔽的坑：`content` 必须是合法 JSON
 
@@ -525,23 +555,25 @@ curl -s -X POST "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type
 
 ## 8. 权限速查（本项目实测结果）
 
-当前应用（`cli_aa50ac247d789be1`）已开通 5 条，全部为**应用身份**：
+当前应用（`cli_aa50ac247d789be1`）已开通 **7 条**，全部为**应用身份**：
 
 ```
-im:message
-im:message:send_as_bot
-im:message.p2p_msg:readonly
-im:message.group_at_msg.include_bot:readonly
-im:message.group_msg                        ← 敏感权限，为了「群里不 @ 也响应」
+im:message                                 总括：消息读写
+im:message:send_as_bot                     发消息
+im:message.p2p_msg:readonly                收单聊
+im:message.group_at_msg.include_bot:readonly   收群里 @ 我的
+im:message.group_msg                       收群里所有消息（敏感权限）
+im:resource                                上传/下载图片资源（发图、读图）
+im:chat:readonly                           查群信息（工作目录命名、列群）
 ```
+
+版本：`1.0.4`。**每次改权限都要重新发版。**
 
 没开、按需再补：
 
 | 权限 | 用途 | 缺失时的表现 |
 |---|---|---|
-| `im:chat:readonly` | 列群、查群信息 | 调 `/im/v1/chats` 报 `99991672` |
-| `im:resource` | 下载消息里的图片/文件 | 图片消息只拿到 `file_key`，读不到内容 |
 | `contact:user.base:readonly` | 查用户姓名/部门 | 只能用 open_id 称呼人 |
+| `im:message:send_as_user` | 以**用户身份**发消息 | 只能以机器人身份发 |
 
 > `99991672` 的含义是「缺 scope」，飞书会把需要的权限名一起返回，照着去开 + **重新发版**。
-

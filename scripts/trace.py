@@ -158,11 +158,11 @@ def main():
             print(f"  {name:<22}{s['count']:>5}{s['total']:>9}ms{s['max']:>9}ms")
 
     if problems:
-        print("\n⚠️ 结构异常：")
+        print("\n[WARN] 结构异常：")
         for p in problems:
             print("  - " + p)
     else:
-        print("\n结构检查：所有子节点都在父节点时间区间内 ✅")
+        print("\n结构检查：所有子节点都在父节点时间区间内 [OK]")
 
 
 if __name__ == "__main__":

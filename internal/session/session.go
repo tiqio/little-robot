@@ -18,7 +18,14 @@ type Session struct {
 
 	mu      sync.RWMutex
 	history []schema.Message
+
+	// storeDir 是"这一个会话"该存到哪；空表示用 Manager 的默认目录。
+	// 飞书场景每个群一个工作目录，历史也跟着群走：chats/<名字>/.claw/sessions
+	storeDir string
 }
+
+// SetStoreDir 指定本会话的落盘目录；不设置就用 Manager 的默认目录
+func (s *Session) SetStoreDir(dir string) { s.storeDir = dir }
 
 func New(id, workDir string) *Session {
 	now := time.Now()
@@ -75,6 +82,12 @@ func NewPersistentManager(dir string) *Manager {
 }
 
 func (m *Manager) GetOrCreate(id, workDir string) *Session {
+	return m.GetOrCreateAt(id, workDir, m.dir)
+}
+
+// GetOrCreateAt 允许为单个会话指定落盘目录（飞书：每个群一个目录）。
+// 顺序：先找 storeDir，再退回 Manager 的默认目录（兼容历史文件放在默认目录的情况）。
+func (m *Manager) GetOrCreateAt(id, workDir, storeDir string) *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -82,11 +95,14 @@ func (m *Manager) GetOrCreate(id, workDir string) *Session {
 		return s
 	}
 
-	// 有目录就尝试恢复；文件不存在或坏了，都当新会话
-	if m.dir != "" {
-		path := filepath.Join(m.dir, safeName(id)+".json")
+	for _, dir := range []string{storeDir, m.dir} {
+		if dir == "" {
+			continue
+		}
+		path := filepath.Join(dir, safeName(id)+".json")
 		if s, err := Load(path); err == nil {
 			s.WorkDir = workDir // 工作区以本次启动为准，历史保留
+			s.storeDir = storeDir
 			m.sessions[id] = s
 			return s
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -100,14 +116,19 @@ func (m *Manager) GetOrCreate(id, workDir string) *Session {
 			2. 文件损坏 ——> 也当新会话，但最好打一行日志，不加log的话，回遇到“会话莫名其妙丢了”，却没有任何线索
 	*/
 	s := New(id, workDir)
+	s.storeDir = storeDir
 	m.sessions[id] = s
 	return s
 }
 
-// Save 把会话写回磁盘；没配置目录时什么都不做
+// Save 把会话写回磁盘；会话自己指定了目录就优先用它，否则用 Manager 的默认目录
 func (m *Manager) Save(s *Session) (string, error) {
-	if m.dir == "" {
+	dir := s.storeDir
+	if dir == "" {
+		dir = m.dir
+	}
+	if dir == "" {
 		return "", nil
 	}
-	return s.Save(m.dir)
+	return s.Save(dir)
 }

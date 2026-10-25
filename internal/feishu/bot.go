@@ -33,6 +33,8 @@ type Bot struct {
 	seen        map[string]struct{}
 	locks       map[string]*sync.Mutex
 	worktreeMgr *worktree.Manager
+	chatDirs    *chatDirs // 新增：chat_id -> 目录名
+	chatNames   sync.Map  // 新增：进程内缓存群名，避免每轮调用API
 }
 
 // internal/worktree/worktree.go 里加一个判断，或者放在 bot 里
@@ -84,6 +86,8 @@ func NewBot(appID, appSecret string, eng *engine.AgentEngine) *Bot {
 		seen:      make(map[string]struct{}),
 		locks:     make(map[string]*sync.Mutex),
 	}
+
+	b.chatDirs = newChatDirs(eng.WorkDir)
 
 	if isRepoRoot(eng.WorkDir) {
 		if mgr, err := worktree.NewManager(eng.WorkDir); err == nil {
@@ -158,48 +162,63 @@ func (b *Bot) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) e
 		// 每个群一个独立目录（也解决了之前“共用一个workspace”的问题）
 		//if b.worktreeMgr != nil {
 		// 无条件注入：让workDirFor自己决定用worktree还是子目录
+		// 每次运行一个工作目录；历史也跟着这个目录走
+		workDir := b.workDirFor(runCtx, chatID) // 1. 先定目标
+		sessDir := filepath.Join(workDir, ".claw", "sessions")
+
 		rs := runstate.New()
-		rs.WorkDir = b.workDirFor(chatID)
+		rs.WorkDir = workDir
+		rs.ChatID = chatID
+		rs.ChatName = filepath.Base(workDir) // 2. 顺手把群名称带上
 		runCtx = runstate.With(runCtx, rs)
 		//}
 
 		// 最小修法，bot里面建立一个共享会话（更好的做法是按照chatID分会话，每个用户共享记忆，但是这里先让它跑通）
 		// 现在改成了chatID，每个群一份记忆，写"feishu-default"会让A群的问题污染B群的答案"
-		sess := b.sessions.GetOrCreate(chatID, b.eng.WorkDir)
+		sess := b.sessions.GetOrCreateAt(chatID, b.eng.WorkDir, sessDir)
 		if err := b.eng.Run(runCtx, sess, text, reporter); err != nil {
 			log.Printf("[Feishu] 引擎出错：%v", err)
 			reporter.NotifyError(context.Background(), err)
+		}
+
+		// 跑完就落盘：不存的话重启就等于全员失忆
+		if path, err := b.sessions.Save(sess); err != nil { // 3. 跑完就存
+			log.Printf("[Feishu] 保存会话失败：%v", err)
+		} else if path != "" {
+			log.Printf("[Feishu] 会话已保存：%s", path)
 		}
 	}()
 
 	return nil
 }
 
-func (b *Bot) workDirFor(chatID string) string {
-	safe := strings.NewReplacer("/", "_", "\\", "_", "..", "_").Replace(chatID)
+/*
+dirFor 未命中（chats.json 里没这个群）
+→ 闭包执行：可以防止每条消息都会打一次飞书API，写成闭包后，“算名字”这件事只在“真的需要”时发生——惰性求值
+
+	→ b.chatName()
+	     → 先查 chatNames（内存缓存，避免连续两次 API）
+	     → 没有再调 API
+*/
+func (b *Bot) workDirFor(ctx context.Context, chatID string) string {
+	// 目录名只在首次出现时算一次，结果固化在 .claw/chats.json 里
+	name := b.chatDirs.dirFor(chatID, func() string {
+		return b.chatName(ctx, chatID) // 拿不到就返回 ""，退化成纯 shortID
+	})
 
 	if b.worktreeMgr != nil {
-		/*
-			第一次 Create: path=".../.worktrees/probe2" err=<nil>
-			第二次 Create: path="" err=worktree "probe2"已存在
-			这不行啊，第一次在.worktrees/chat-oc_a，第二次变成chat/oc_a了，必须把Create改成Ensure
-		*/
-		//if path, err := b.worktreeMgr.Create("chat-" + safe); err == nil {
-		//	return path // 自定义path为worktree
-		//}
-
-		path, created, err := b.worktreeMgr.Ensure("chat-" + safe)
-		if err == nil { // 当没有问题的时候会选择已有/创建的目录
+		path, created, err := b.worktreeMgr.Ensure("chat-" + name)
+		if err == nil {
 			if created {
-				log.Printf("[Feishu] 为会话%s新建worktree：%s", safe, path)
+				log.Printf("[Feishu] 为会话 %s 新建 worktree：%s", name, path)
 			}
 			return path
 		}
-
-		log.Printf("[Feishu] 创建worktree失败，改用子目录：%v", err)
+		log.Printf("[Feishu] worktree 不可用，改用子目录：%v", err)
 	}
 
-	dir := filepath.Join(b.eng.WorkDir, "chats", safe) // safe是ID
+	dir := filepath.Join(b.eng.WorkDir, "chats", name)
+
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		log.Printf("[Feishu] 建会话目录失败：%v", err)
 	}

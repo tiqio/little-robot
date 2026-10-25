@@ -6,6 +6,8 @@ import (
 
 type RunState struct {
 	WorkDir  string // 本次运行的目录覆盖；空=用引擎默认的
+	ChatID   string // 飞书会话 id（oc_xxx）
+	ChatName string // 可读名（dd-f1a826）：写进 trace 与日志，方便人看
 	PlanPath string // 已定稿方案（后面做审批用）
 	PlanHash string
 	Approved bool
