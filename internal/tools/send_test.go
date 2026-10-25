@@ -219,3 +219,90 @@ func TestIsImageExt(t *testing.T) {
 		}
 	}
 }
+
+// 展示名清洗：线上真实事故
+//
+//	name="魔法少女伊莉雅…（PART.1）1/2"
+//	→ 没有 .pdf 手机认不出；斜杠被客户端当路径切开，用户只看到 "2"
+func TestSanitizeFileName(t *testing.T) {
+	pdfPath := "/w/out/hentai/681824/681824-part1.pdf"
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// 没后缀 → 补真实后缀
+		{"缺后缀", "魔法少女伊莉雅 本子", "魔法少女伊莉雅 本子.pdf"},
+		// 斜杠 → 短横线（不能再被当路径切开）
+		{"带斜杠", "伊莉雅本子（PART.1）1/2", "伊莉雅本子（PART.1）1-2.pdf"},
+		{"书名号", "《伊莉雅》1/2", "伊莉雅 1-2.pdf"},
+		// 后缀已经对：原样
+		{"已有pdf", "伊莉雅（13页）.pdf", "伊莉雅（13页）.pdf"},
+		{"大写PDF", "伊莉雅.PDF", "伊莉雅.PDF"},
+		// 假后缀：以真实文件为准
+		{"错后缀", "伊莉雅.zip", "伊莉雅.pdf"},
+		// 空名字 → 用磁盘原名
+		{"空名字", "   ", "681824-part1.pdf"},
+		// 全非法字符 → 兜底磁盘名
+		{"全非法", "///", "681824-part1.pdf"},
+	}
+	for _, c := range cases {
+		if got := sanitizeFileName(c.in, pdfPath); got != c.want {
+			t.Errorf("%s：sanitizeFileName(%q) = %q，期望 %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// 超长名字：截断但必须保住扩展名
+func TestSanitizeFileNameTooLong(t *testing.T) {
+	long := strings.Repeat("很长", 80)
+	got := sanitizeFileName(long, "/w/a.pdf")
+	if !strings.HasSuffix(got, ".pdf") {
+		t.Errorf("截断后必须保住 .pdf：%q", got)
+	}
+	if n := len([]rune(got)); n > maxFileNameRunes {
+		t.Errorf("名字太长：%d 个字符", n)
+	}
+}
+
+// 端到端：事故里的 name 经过 send 之后，交给飞书的文件名必须带后缀、不含斜杠
+func TestSendReportsUsableFileName(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "out/hentai/681824"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "out/hentai/681824/681824-part1.pdf")
+	if err := os.WriteFile(p, []byte("%PDF-1.4 fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fs := &fakeSender{}
+	ctx := WithFileSender(context.Background(), fs)
+	tool := NewSendTool(dir)
+
+	_, err := tool.Execute(ctx, json.RawMessage(`{"path":"out/hentai/681824/681824-part1.pdf","name":"魔法少女伊莉雅 本子（IriKuro log PART.1）1/2"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fs.fileName == "" {
+		t.Fatal("没有走到文件通道")
+	}
+	if strings.ContainsAny(fs.fileName, `/\`) {
+		t.Errorf("文件名不该含路径分隔符：%q", fs.fileName)
+	}
+	if !strings.HasSuffix(fs.fileName, ".pdf") {
+		t.Errorf("文件名必须以 .pdf 结尾（否则手机认不出）：%q", fs.fileName)
+	}
+	if fs.fileType != "pdf" {
+		t.Errorf("file_type 应该是 pdf，实际 %q", fs.fileType)
+	}
+	t.Logf("发给飞书的文件名：%s", fs.fileName)
+}
+
+// 过短的名字是模型写残了（"2"），要用磁盘原名兜底
+func TestSanitizeFileNameTooShort(t *testing.T) {
+	got := sanitizeFileName("2", "/w/out/hentai/681824/681824-part2.pdf")
+	if got != "681824-part2.pdf" {
+		t.Errorf("过短名字应该兜底成磁盘名，实际 %q", got)
+	}
+}

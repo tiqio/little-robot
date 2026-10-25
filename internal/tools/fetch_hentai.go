@@ -204,13 +204,19 @@ func (t *FetchHentaiTool) Execute(ctx context.Context, args json.RawMessage) (st
 		}
 		if len(pdfs) == 1 {
 			b.WriteString("整本已合成 PDF：" + pdfs[0] + "\n")
-			b.WriteString(coverHint + "send(" + pdfs[0] + ") 发整本（文件名带上标题和页数）")
+			b.WriteString(coverHint + fmt.Sprintf("send(%s, name=\"%s（%d页）.pdf\") 发整本",
+				pdfs[0], truncateTitle(g.EnglishTitle), g.NumPages))
 		} else {
 			b.WriteString(fmt.Sprintf("整本较大，已拆成 %d 个 PDF：\n", len(pdfs)))
 			for i, p := range pdfs {
 				b.WriteString(fmt.Sprintf("  %d) %s\n", i+1, p))
 			}
-			b.WriteString(coverHint + "按顺序 send 每一个 PDF（文件名标上 1/N、2/N）")
+			b.WriteString(coverHint + "按顺序 send 每一个 PDF。\n")
+			b.WriteString("name 这么写（必须带 .pdf）：\n")
+			for i, p := range pdfs {
+				b.WriteString(fmt.Sprintf("  send(%s, name=\"%s 第%d部分（共%d部分）.pdf\")\n",
+					p, truncateTitle(g.EnglishTitle), i+1, len(pdfs)))
+			}
 		}
 	}
 	return b.String(), nil
@@ -539,6 +545,16 @@ func tagNames(tags []sources.Tag, typ string) string {
 	s := strings.Join(names, ", ")
 	if len(s) > 120 {
 		s = s[:120] + "…"
+	}
+	return s
+}
+
+// truncateTitle 标题进文件名前先截断：飞书名字太长会被客户端折行，也挤掉扩展名
+func truncateTitle(s string) string {
+	s = strings.TrimSpace(s)
+	r := []rune(s)
+	if len(r) > 40 {
+		return string(r[:40]) + "…"
 	}
 	return s
 }
