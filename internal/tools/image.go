@@ -31,7 +31,7 @@ fetch_image：一个工具，两种用法（找现成照片 / 下载指定 URL�
 AI 生成（pollinations）只在显式 url 时使用，不参与自动降级。
 */
 
-// 三个图源对应的图片域（外加 AI 生成的 pollinations）
+// 图源对应的图片域（外加 AI 生成的 pollinations）
 var imageHosts = []string{
 	"images.pexels.com",     // Pexels
 	"live.staticflickr.com", // Openverse 常见来源（Flickr CC）
@@ -41,6 +41,21 @@ var imageHosts = []string{
 	"cdn.donmai.us",         // Danbooru 图床
 	"safebooru.org",         // Safebooru
 	"nekos.best",            // nekos.best 随机二次元图
+	"yande.re",              // yande.re（NSFW 主力）
+	"files.yande.re",        // yande 原图
+	"assets.yande.re",       // yande 缩略图
+	"konachan.com",          // Konachan（NSFW 兜底，CF challenge 偶尔拦人）
+	"files.konachan.com",    // Konachan 图床
+	"sankarea.eu",           // Sankarea（yande 镜像）
+	"files.sankarea.eu",     // Sankarea 图床
+	"i1.nhentai.net",        // nhentai CDN（/api/v2/cdn 实测 i1-i4，兜底硬编码）
+	"i2.nhentai.net",
+	"i3.nhentai.net",
+	"i4.nhentai.net",
+	"t1.nhentai.net", // nhentai 缩略图 CDN
+	"t2.nhentai.net",
+	"t3.nhentai.net",
+	"t4.nhentai.net",
 }
 
 const imageMaxBytes = 10 << 20
@@ -74,12 +89,14 @@ A. keyword：按关键词搜现成照片，只用三个可信源，依次尝试�
 B. url：下载指定 https 直链（域名需白名单）。
    只有用户明确要求"生成/画"时，才用 https://image.pollinations.ai/prompt/<英文描述>。
 
-source=anime（二次元）：走 Danbooru/Safebooru/nekos.best。
+source=anime（二次元）：走 yande.re/Danbooru/Safebooru/nekos.best/Konachan。
    - keyword **只要给角色名或一个特征**（nahida、cat_ears、blue_hair），
      工具会自动解析成规范标签（nahida → nahida_(genshin_impact)）。
    - 不要堆叠多个条件：Danbooru 匿名搜索最多 2 个标签，写多了只会得到空结果，
      而"空结果"不代表没这张图，只代表标签组合太窄。
-   - 只返回 SFW（强制 rating:general），r18/nsfw 之类的词会被忽略。
+   - rating 控制尺度（默认 general）：
+     general=SFW；questionable=轻度 R；explicit=纯 R18（用户说"色图/r18/福利"就用 explicit）。
+     explicit 时主力切到 yande.re（最大 NSFW 库），Danbooru 按 rating:explicit 过滤。
    - 返回里会写「实际标签：xxx」，看清它再去调整关键词，不要盲目换词重试。
 
 【必须看图确认】拿到图后你要先判断它是否符合用户要求：
@@ -107,7 +124,12 @@ source=anime（二次元）：走 Danbooru/Safebooru/nekos.best。
 				"source": map[string]interface{}{
 					"type":        "string",
 					"enum":        []string{"photo", "anime"},
-					"description": "photo=真实照片（Pexels/Openverse/Wikimedia）；anime=二次元（Danbooru/Safebooru/nekos.best），关键词用标签风格如 cat_ears、blue_hair。默认 photo",
+					"description": "photo=真实照片（Pexels/Openverse/Wikimedia）；anime=二次元（yande/Danbooru/Safebooru/nekos.best），关键词用标签风格如 cat_ears、blue_hair。默认 photo",
+				},
+				"rating": map[string]interface{}{
+					"type":        "string",
+					"enum":        []string{"general", "questionable", "explicit"},
+					"description": "anime 专用：general=SFW（默认）；questionable=轻度 R；explicit=纯 R18。photo 源忽略此参数",
 				},
 			},
 			"required": []string{"path"},
@@ -121,6 +143,7 @@ func (t *ImageTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 		URL     string `json:"url"`
 		Path    string `json:"path"`
 		Source  string `json:"source"`
+		Rating  string `json:"rating"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return "", fmt.Errorf("参数解析失败：%w", err)
@@ -153,6 +176,15 @@ func (t *ImageTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 	if source == "" {
 		source = "photo"
 	}
+	rating := strings.ToLower(strings.TrimSpace(in.Rating))
+	if rating == "" {
+		rating = "general"
+	}
+	switch rating {
+	case "general", "questionable", "explicit":
+	default:
+		return "", fmt.Errorf("rating 只能是 general/questionable/explicit，收到 %q", in.Rating)
+	}
 
 	var chain []func(context.Context, string) ([]imageCandidate, error)
 	switch source {
@@ -162,9 +194,18 @@ func (t *ImageTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 			t.searchPexels, searchOpenverse, searchCommons,
 		}
 	case "anime":
-		// 二次元：Danbooru 标签最准（强制 rating:general）→ Safebooru → nekos 随机
+		// 二次元：Danbooru 标签最准 → Safebooru → nekos 随机兜底
 		chain = []func(context.Context, string) ([]imageCandidate, error){
-			searchDanbooru, searchSafebooru, searchNekosBest,
+			func(ctx context.Context, kw string) ([]imageCandidate, error) { return searchDanbooru(ctx, kw, rating) },
+			searchSafebooru, searchNekosBest,
+		}
+		if rating != "general" {
+			// R18：yande.re 最大 NSFW 库打头，Konachan 殿后兜底（CF challenge 偶尔拦人）
+			chain = append([]func(context.Context, string) ([]imageCandidate, error){
+				func(ctx context.Context, kw string) ([]imageCandidate, error) { return searchYande(ctx, kw, rating) },
+			}, chain...)
+			chain = append(chain,
+				func(ctx context.Context, kw string) ([]imageCandidate, error) { return searchKonachan(ctx, kw, rating) })
 		}
 	default:
 		return "", fmt.Errorf("source 只能是 photo 或 anime，收到 %q", in.Source)
@@ -455,16 +496,17 @@ func fileToDataURL(path string) (string, error) {
 
 // ---- 二次元图源 ----
 
-// Danbooru：标签最全，强制 rating:general 保证 SFW。
+// Danbooru：标签最全。rating 由调用方决定（general=纯 SFW，explicit=纯 R18）。
 //
 // 关键：Danbooru 只认**规范标签**（nahida_(genshin_impact)），不认自由文本。
 // 模型天然会写 "nahida genshin_impact r18"，直接拼成 tags 会得到 0 条（HTTP 200 + 空数组），
 // 于是它换着关键词重试，越加越多、结果永远为空。所以这里先做一次标签解析。
-func searchDanbooru(ctx context.Context, keyword string) ([]imageCandidate, error) {
+func searchDanbooru(ctx context.Context, keyword, rating string) ([]imageCandidate, error) {
+	ratingTag := "rating:" + rating
 	tags := danbooruTags(ctx, keyword)
 
 	q := url.Values{}
-	q.Set("tags", "rating:general "+tags)
+	q.Set("tags", ratingTag+" "+tags)
 	q.Set("limit", "8")
 
 	data, _, err := netutil.Fetch(ctx, "https://danbooru.donmai.us/posts.json?"+q.Encode(), 4<<20)
@@ -472,7 +514,7 @@ func searchDanbooru(ctx context.Context, keyword string) ([]imageCandidate, erro
 		// 422 多半是 tag 太多（匿名上限 2 个）→ 只留第一个再试一次
 		fields := strings.Fields(tags)
 		if len(fields) > 1 {
-			q.Set("tags", "rating:general "+fields[0])
+			q.Set("tags", ratingTag+" "+fields[0])
 			if d2, _, err2 := netutil.Fetch(ctx, "https://danbooru.donmai.us/posts.json?"+q.Encode(), 4<<20); err2 == nil {
 				data, err = d2, nil
 			}
@@ -492,15 +534,15 @@ func searchDanbooru(ctx context.Context, keyword string) ([]imageCandidate, erro
 	if len(posts) == 0 {
 		first := strings.Fields(tags)
 		if len(first) > 1 {
-			q.Set("tags", "rating:general "+first[0])
+			q.Set("tags", ratingTag+" "+first[0])
 			if data, _, err := netutil.Fetch(ctx, "https://danbooru.donmai.us/posts.json?"+q.Encode(), 4<<20); err == nil {
 				posts, _ = parseDanbooruPosts(data)
 			}
 		}
 	}
 	if len(posts) == 0 {
-		return nil, fmt.Errorf("Danbooru 没有同时匹配「%s」的图（已强制 SFW）。"+
-			"换更常见的标签，比如只给角色名或只给一个特征", tags)
+		return nil, fmt.Errorf("Danbooru 没有同时匹配「%s」的图（rating=%s）。"+
+			"换更常见的标签，比如只给角色名或只给一个特征", tags, rating)
 	}
 
 	var out []imageCandidate
