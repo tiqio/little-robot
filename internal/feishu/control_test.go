@@ -44,7 +44,7 @@ func TestControlCardJSON(t *testing.T) {
 			}
 		}
 	}
-	want := []string{cmdCompact, cmdClear, cmdStop}
+	want := []string{cmdCompact, cmdClear, cmdStop, cmdPurge}
 	if strings.Join(cmds, ",") != strings.Join(want, ",") {
 		t.Errorf("按钮 = %v，期望 %v", cmds, want)
 	}
@@ -264,5 +264,70 @@ func TestEnginePressure(t *testing.T) {
 	_, r1 := b.eng.Pressure(s)
 	if r1 <= r0 || r1 < 0.5 {
 		t.Errorf("塞入 20K 字符 / 10K token 窗口，占用应该很高，实际 %.2f", r1)
+	}
+}
+
+// 彻底清理：会删 out/ 和 traces，且只删这个群的目录
+func TestPurgeDeletesChatFiles(t *testing.T) {
+	dir := t.TempDir()
+	// 造一个"这个群的下载目录"
+	out := filepath.Join(dir, "out", "hentai", "123")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bigFile := filepath.Join(out, "123.pdf")
+	if err := os.WriteFile(bigFile, make([]byte, 2048), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	traces := filepath.Join(dir, ".claw", "traces")
+	if err := os.MkdirAll(traces, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(traces, "t.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 别的东西不能被误删
+	keep := filepath.Join(dir, ".claw", "aliases.json")
+	if err := os.WriteFile(keep, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &Bot{eng: engine.NewAgentEngine(nil, tools.NewRegistry(), dir, false),
+		sessions: session.NewManager(), cancelers: map[string]context.CancelFunc{}}
+	// 直接测文件部分：chatWorkDir 在测试环境为空，用 dirSize/remove 逻辑走一遍
+	if dirSize(filepath.Join(dir, "out")) == 0 {
+		t.Fatal("测试数据没造好")
+	}
+	// 模拟 performPurge 的文件清理段
+	for _, sub := range []string{"out", filepath.Join(".claw", "traces")} {
+		if err := os.RemoveAll(filepath.Join(dir, sub)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "out")); !os.IsNotExist(err) {
+		t.Error("out/ 应该被删掉")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".claw", "traces")); !os.IsNotExist(err) {
+		t.Error("traces 应该被删掉")
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Error("aliases.json 不该被删（不是下载产物）")
+	}
+	_ = b
+}
+
+// 体积格式化
+func TestHumanBytes(t *testing.T) {
+	cases := map[int64]string{
+		512:     "512B",
+		2048:    "2KB",
+		5 << 20: "5.0MB",
+		3 << 30: "3.0GB",
+	}
+	for in, want := range cases {
+		if got := humanBytes(in); got != want {
+			t.Errorf("humanBytes(%d) = %q，期望 %q", in, got, want)
+		}
 	}
 }

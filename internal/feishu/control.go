@@ -17,6 +17,7 @@ import (
 // 卡片按钮的三种动作
 const (
 	cmdCompact = "compact" // 压缩上下文
+	cmdPurge   = "purge"   // 彻底清理：会话 + 下载的文件
 	cmdClear   = "clear"   // 清理上下文
 	cmdStop    = "stop"    // 停止正在跑的 Run
 )
@@ -28,8 +29,9 @@ const (
 func controlCardJSON(hint string) string {
 	if hint == "" {
 		hint = "**压缩**：把历史折叠成摘要（省 token，保留记忆）\n" +
-			"**清理**：删掉这个群的全部上下文（重新开始）\n" +
-			"**停止**：中断正在跑的任务"
+			"**清理**：删掉这个群的**对话记忆**（下载的文件还在）\n" +
+			"**停止**：中断正在跑的任务\n" +
+			"**彻底清理**：连下载的本子/图片一起删（会二次确认）"
 	}
 	card := map[string]interface{}{
 		"config": map[string]interface{}{"wide_screen_mode": true},
@@ -50,6 +52,12 @@ func controlCardJSON(hint string) string {
 					buttonJSON("⏹ 停止任务", "primary", cmdStop),
 				},
 			},
+			map[string]interface{}{
+				"tag": "action",
+				"actions": []interface{}{
+					purgeButtonJSON(),
+				},
+			},
 		},
 	}
 	b, err := json.Marshal(card)
@@ -58,6 +66,24 @@ func controlCardJSON(hint string) string {
 		return ""
 	}
 	return string(b)
+}
+
+// purgeButtonJSON 危险按钮：删文件不可恢复，点之前先弹确认框
+func purgeButtonJSON() map[string]interface{} {
+	return map[string]interface{}{
+		"tag":   "button",
+		"text":  map[string]interface{}{"tag": "plain_text", "content": "🧨 彻底清理（含文件）"},
+		"type":  "danger",
+		"value": map[string]interface{}{"cmd": cmdPurge},
+		"confirm": map[string]interface{}{
+			"title": map[string]interface{}{"tag": "plain_text", "content": "确认彻底清理？"},
+			"text": map[string]interface{}{
+				"tag": "plain_text",
+				"content": "会删除本群的全部对话记忆，以及下载过的本子/图片（不可恢复）。" +
+					"只想清记忆、保留文件，请用「清理上下文」。",
+			},
+		},
+	}
 }
 
 func buttonJSON(text, typ, cmd string) map[string]interface{} {
@@ -114,6 +140,8 @@ func (b *Bot) perform(ctx context.Context, cmd, chatID string) (string, bool) {
 		return b.performClear(ctx, chatID)
 	case cmdStop:
 		return b.performStop(chatID)
+	case cmdPurge:
+		return b.performPurge(ctx, chatID)
 	}
 	return "未知操作：" + cmd, false
 }
@@ -154,6 +182,10 @@ func (b *Bot) performClear(ctx context.Context, chatID string) (string, bool) {
 	}
 	// 不管有没有热会话，都按这个群的工作目录算一遍磁盘路径
 	if d := b.sessDirFor(ctx, chatID); d != "" {
+		dirs[d] = true
+	}
+	// 旧版本的会话可能落在 Manager 的默认目录（workspace/.claw/sessions）
+	if d := b.sessions.DefaultDir(); d != "" {
 		dirs[d] = true
 	}
 
@@ -267,6 +299,8 @@ func controlCommandOf(text string) string {
 		return cmdCompact
 	case "清理", "清理上下文", "清空", "清空上下文", "/clear", "clear":
 		return cmdClear
+	case "彻底清理", "全部清理", "清空工作区", "/purge", "purge":
+		return cmdPurge
 	case "停止", "停下", "停", "中断", "/stop", "stop":
 		return cmdStop
 	case "面板", "控制台", "控制面板", "按钮", "菜单", "/menu", "menu":
@@ -302,7 +336,7 @@ func (b *Bot) handleControlText(ctx context.Context, messageID, chatID, text str
 		return true
 	}
 
-	// 压缩/清理会改历史，跑着的时候先让用户停
+	// 压缩/清理/彻底清理会改历史或删文件，跑着的时候先让用户停
 	if cmd != cmdStop && b.isRunning(chatID) {
 		_ = reporter.reply(ctx, "任务正在跑，先发「停止」再"+map[string]string{
 			cmdCompact: "压缩", cmdClear: "清理",
@@ -370,4 +404,93 @@ func panelHint(ratio float64) (hint string, want bool) {
 	return fmt.Sprintf("**上下文快满了**：已占窗口约 %d%%。\n"+
 		"现在点 **🧹 压缩上下文** 可以立刻瘦身（保留记忆，只折叠内容）；\n"+
 		"或者点 **🗑 清理上下文** 从头开始。", int(ratio*100)), true
+}
+
+// ---- 彻底清理：会话 + 这个群下载下来的文件 ----
+
+// performPurge 把"上下文"和"占地方的文件"一起清掉。
+//
+// 为什么需要单列一个动作：会话文件只有几十 KB，真正吃盘的是 out/ 里的
+// 本子 PDF 和图片（实测一个群 114MB）。删会话不等于腾空间，
+// 但删文件比删记忆危险得多，所以走带确认框的按钮，且只清这个群的目录。
+func (b *Bot) performPurge(ctx context.Context, chatID string) (string, bool) {
+	clearMsg, cleared := b.performClear(ctx, chatID)
+
+	workDir := b.chatWorkDir(ctx, chatID)
+	if workDir == "" {
+		// 单测环境没有 per-chat 目录，只清会话
+		if cleared {
+			return clearMsg, true
+		}
+		return "没有可清理的内容", false
+	}
+
+	var freed int64
+	var removed []string
+	// 只清"这个群自己下载的产物"和"运行记录"，不碰 skills/别名/用户手工放的文件
+	for _, sub := range []string{"out", filepath.Join(".claw", "traces")} {
+		dir := filepath.Join(workDir, sub)
+		size := dirSize(dir)
+		if size == 0 {
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("[Feishu] 删除 %s 失败：%v", dir, err)
+			continue
+		}
+		freed += size
+		removed = append(removed, sub)
+	}
+
+	if !cleared && len(removed) == 0 {
+		return "没有可清理的内容（上下文和文件都是空的）", false
+	}
+	msg := "🧨 已彻底清理："
+	if cleared {
+		msg += "会话记忆 + "
+	}
+	msg += fmt.Sprintf("删除 %s，释放 %s", strings.Join(removed, "、"), humanBytes(freed))
+	return msg, true
+}
+
+// chatWorkDir 这个群的工作目录；拿不到返回空串（单测环境）
+func (b *Bot) chatWorkDir(ctx context.Context, chatID string) string {
+	if b.chatDirs == nil {
+		return ""
+	}
+	return b.workDirFor(ctx, chatID)
+}
+
+// dirSize 目录总字节数（不存在返回 0）
+func dirSize(dir string) int64 {
+	var total int64
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // 单个文件读不到就跳过，别让整个清理失败
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if info, ierr := d.Info(); ierr == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return 0
+	}
+	return total
+}
+
+// humanBytes 人类可读体积
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1fGB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1fMB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0fKB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%dB", n)
 }

@@ -157,3 +157,7 @@ func (m *Manager) Get(id string) (*Session, bool) {
 	s, ok := m.sessions[id]
 	return s, ok
 }
+
+// DefaultDir Manager 的默认落盘目录（空 = 不落盘）。
+// 清理时要把它也算上：旧版本会话可能只存在这里。
+func (m *Manager) DefaultDir() string { return m.dir }
