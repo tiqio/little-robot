@@ -6,6 +6,7 @@
 > - ✅ **M4 nhentai**（ch29/ch37）：`fetch_hentai` 工具（id/URL 直抓、query 搜索、page 翻最新列表）+ pdf/zip/images 三种形态（ch37 起默认 PDF，手机直接预览）
 > - ✅ **工具归一**（ch30/ch31）：`send_image`+`send_file` 合并为 `send`（按扩展名+大小自动路由消息形态）；描述手术（单图/整本决策规则、看/发流水线、bash 少 curl）
 > - ✅ **思考机制重构**（ch32/ch33/ch34）：治"思考吃光额度→静默退出"。S1 finish_reason 透传+空输出救援；S2 思考/行动分家+独立预算；S3 图片降采样+历史图片摘要。详见 `docs/llm-mechanism.md`
+> - ✅ **搜索健壮性**（ch44）：零结果自动降级（去语言词/去下划线/逐词）+ 名字解析层（本地别名表 + 作品反查角色标签）+ 打转检测（同参数连续 6 次强制停）
 > - ⏳ **M3 通用爬虫** `fetch_page`、**M5 体验增强**（post 网格 / 限流缓存）、**S4 外置查找**（lookup/web_search）待排期
 > - ✅ **本子合成 PDF**（ch37）：`internal/pdf` 自研极简 PDF 生成器（每页内嵌 JPEG，不加密），超飞书 30MB 上限自动按页拆分 part1/part2
 >
@@ -235,3 +236,38 @@
 - **视频下载**：mp4 在 M3 只"记录 URL"，默认不下载（飞书 file 消息支持 mp4，但动辄几十 MB）；
 - **登录态**：nhentai 收藏、e-hentai 标签库（需要 API key，v2 已支持 `Key <api_key>` 头）；
 - **接收方向**：用户发图/PDF 给机器人（要处理 `image`/`file` 消息事件 + `im:resource` 下载，`docs/feishu-setup.md` §7 已列，独立做）。
+
+---
+
+## 搜索为什么老是 0 条（ch44 实测）
+
+线上事故：用户说「帮我找鸣潮小爱弥斯的 R18 本子，中文」，模型连续 82 轮用
+`aysa wuthering_waves chinese` 搜同一个词，全部 0 条，烧了 18 分钟。
+
+### 三个叠加原因
+
+1. **nhentai 的 query 是"多词 AND"**：`wuthering_waves chinese` = 0 条，
+   但 `wuthering waves` = 77 条。多一个语言词就把结果清零。
+2. **下划线不认**：`wuthering_waves` 0 条，`wuthering waves` 77 条。
+3. **名字猜错**：模型把「爱弥斯」猜成 `aysa`/`ayshea`，正确是 `aemeath`
+   （`aemeath` 5 条 —— 而且其中一条标题就是「爱弥斯 (Wuthering Waves)」）。
+4. **打转检测失效**：旧实现只在 `IsError` 时计数，"成功但 0 条"直接清零，
+   所以 82 轮都没人拦。
+
+### 现在的四层兜底
+
+| 层 | 做什么 | 依据 |
+|---|---|---|
+| 1 | 原词搜索 | — |
+| 2 | 名字解析：本地别名表（`爱弥斯→aemeath`、`伊莉雅→illyasviel`…） | 内置表 + `workspace/.claw/aliases.json`（用户可自己加） |
+| 3 | 作品反查：用作品名搜到本子，读它的 `character` 标签 | nhentai 自己的数据，不引新源 |
+| 4 | 写法降级：去语言词 → 去下划线 → 逐词单独搜 | 实测 `wuthering waves` 77 条、`wuthering_waves` 0 条 |
+
+每层结果都缓存（含"解析不出"的负结果），避免撞 10 次/分钟限流；
+降级链一次最多 4 个词。
+
+### 为什么不用子 agent 做这件事
+
+同一个模型、同一个知识盲区：它猜 `aysa` 猜错，派个子 agent 还是猜 `aysa`，
+只是多一次调用、多几十秒、多一份 token。**名字解析需要的是数据（对照表/站点标签），
+不是推理。** 子 agent 适合"拆任务"，不适合"补知识"。

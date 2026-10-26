@@ -40,6 +40,30 @@ var _ BaseTool = &FetchHentaiTool{}
 type FetchHentaiTool struct {
 	workDir string
 	cli     *sources.Nhentai
+
+	// resolveCache 名字解析结果缓存：key 是归一化后的输入。
+	// 不加缓存的话，模型连续重试同一个错词会反复打 nhentai（限流 10 次/分钟）。
+	resolveMu     sync.Mutex
+	cachedResolve map[string]resolveEntry
+}
+
+// resolveEntry 一条解析结果：候选名 + 来源说明
+type resolveEntry struct {
+	names []string
+	note  string
+}
+
+// cacheResolve 写入缓存（空结果也缓存，避免反复问同一个错名字）
+func (t *FetchHentaiTool) cacheResolve(query string, names []string, note string) {
+	t.resolveMu.Lock()
+	defer t.resolveMu.Unlock()
+	if t.cachedResolve == nil {
+		t.cachedResolve = make(map[string]resolveEntry)
+	}
+	if len(t.cachedResolve) > 200 {
+		t.cachedResolve = make(map[string]resolveEntry)
+	}
+	t.cachedResolve[normalizeAlias(query)] = resolveEntry{names: names, note: note}
 }
 
 func NewFetchHentaiTool(workDir string, cli *sources.Nhentai) *FetchHentaiTool {
@@ -224,14 +248,117 @@ func (t *FetchHentaiTool) Execute(ctx context.Context, args json.RawMessage) (st
 
 // searchMode 搜索：候选列表 + 前 3 个封面回传给模型看
 func (t *FetchHentaiTool) searchMode(ctx context.Context, dir, query string) (string, error) {
-	items, total, err := t.cli.Search(ctx, query)
-	if err != nil {
-		return "", err
+	// 先用原词搜；0 条时自动降级再试几种写法。
+	// 真实事故：模型用 "aysa wuthering_waves chinese" 连搜 80 次全 0 条——
+	// nhentai 的 query 是**多词 AND**，多一个无义词（chinese）就从有结果变 0 条，
+	// 而模型只会换同义词重试，永远撞同一堵墙。工具自己降级比让模型猜划算得多。
+	// 0 条时先做"名字解析"：本地别名表 + 作品反查角色标签。
+	// 这一步才是解决"短语没效果"的关键——模型猜的英文名可能根本不存在，
+	// 换多少种写法都没用，必须换成站点上真实存在的标签。
+	derived, note := t.resolveNames(ctx, dir, query)
+	for _, name := range derived {
+		items, total, err := t.cli.Search(ctx, name)
+		if err != nil {
+			return "", err
+		}
+		if len(items) > 0 {
+			return t.listMode(ctx, dir, fmt.Sprintf("nhentai 搜索 %q（%s）", name, note), items, total)
+		}
 	}
-	if len(items) == 0 {
-		return fmt.Sprintf("nhentai 搜索 %q 共 0 条结果。换更短的关键词试试，或换 artist:xxx 形式", query), nil
+
+	// 限流是 10 次/分钟，降级链最多试 4 个词：再多就为了一个搜不到的名字把配额烧光
+	tries := searchVariants(query)
+	if len(tries) > maxSearchTries {
+		tries = tries[:maxSearchTries]
 	}
-	return t.listMode(ctx, dir, fmt.Sprintf("nhentai 搜索 %q", query), items, total)
+	var tried []string
+	for _, q := range tries {
+		items, total, err := t.cli.Search(ctx, q)
+		if err != nil {
+			// 429/503 这类限流不算"没结果"，直接把错误交给模型，它才知道该等
+			return "", err
+		}
+		tried = append(tried, q)
+		if len(items) == 0 {
+			continue
+		}
+		label := fmt.Sprintf("nhentai 搜索 %q", q)
+		if q != tries[0] {
+			label += fmt.Sprintf("（原词 %q 是 0 条，自动降级后命中）", tries[0])
+		}
+		return t.listMode(ctx, dir, label, items, total)
+	}
+	return zeroResultHint(query, tried), nil
+}
+
+// maxSearchTries 一次搜索最多试几种写法（限流 10 次/分钟，别为了一个错名字烧光配额）
+const maxSearchTries = 4
+
+// searchVariants 生成"同一意图的几种写法"，从最具体到最宽松：
+//  1. 原样
+//  2. 去掉语言词（chinese/english/japanese/中文…）——它们会让 AND 搜索变 0 条
+//  3. 只要第一个词（通常是角色名，最具体也最可能命中）
+//  4. 下划线换成空格（nhentai 不吃 danbooru 风格的下划线标签）
+//  5. 逐个词单独试（长的优先，下划线词组整体转空格）——角色名错、作品名对时还能救回来
+func searchVariants(query string) []string {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return nil
+	}
+	out := []string{q}
+	seen := map[string]bool{q: true}
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v != "" && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+
+	drop := map[string]bool{
+		"chinese": true, "english": true, "japanese": true, "korean": true,
+		"chinese,": true, "中文": true, "汉化": true, "漢化": true, "translated": true,
+		"language": true, "translation": true,
+	}
+	var kept []string
+	for _, w := range strings.Fields(q) {
+		if !drop[strings.ToLower(w)] {
+			kept = append(kept, w)
+		}
+	}
+	if len(kept) > 0 {
+		add(strings.Join(kept, " "))
+	}
+	if len(kept) > 1 {
+		add(kept[0])
+	}
+	if strings.Contains(q, "_") {
+		add(strings.ReplaceAll(q, "_", " "))
+	}
+	// 逐个"词"单独试（长的优先）：角色名写错的时候，作品名往往是对的。
+	// 注意保留下划线词组的整体性：wuthering_waves 要变成 "wuthering waves"
+	// 而不是拆成两个无义词（真实数据：wuthering_waves=0 条，wuthering waves=25 条）。
+	tokens := strings.Fields(q)
+	sort.SliceStable(tokens, func(i, j int) bool { return len(tokens[i]) > len(tokens[j]) })
+	for i, tok := range tokens {
+		if i >= 3 {
+			break
+		}
+		add(strings.ReplaceAll(tok, "_", " "))
+	}
+	return out
+}
+
+// zeroResultHint 全都 0 条时，给模型可执行的下一步，而不是一句"换更短的关键词"
+func zeroResultHint(query string, tried []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "nhentai 搜 %q 没有结果。已自动试过：%s\n", query, strings.Join(tried, " / "))
+	b.WriteString("这个关键词大概率不存在（常见原因：角色名写成了中文音译）。下一步选一个：\n")
+	b.WriteString("1) 换成角色/作品的**英文名**再搜，例如 aemeath（爱弥斯）、illyasviel（伊莉雅）；\n")
+	b.WriteString("2) 只留一个词，不要加 chinese/english 这类语言词（多词是 AND，越多越可能 0 条）；\n")
+	b.WriteString("3) 用 artist:作者名 或 tag:标签 搜；\n")
+	b.WriteString("4) 直接搜作品名（如 wuthering waves）看最新投稿，或让用户提供本子编号/链接。")
+	return b.String()
 }
 
 // latestMode 最新本子列表：官网 ?page=N 的 JSON 版（按上传时间倒序）
@@ -557,4 +684,89 @@ func truncateTitle(s string) string {
 		return string(r[:40]) + "…"
 	}
 	return s
+}
+
+// resolveNames 把"用户说法"翻译成 nhentai 上真实存在的标签。
+//
+// 两道来源，先便宜后昂贵：
+//  1. 本地别名表（离线，零请求）：爱弥斯 → aemeath
+//  2. 作品反查：先用作品名搜到本子，再读它的 character 标签
+//     （搜 "wuthering waves" 命中后，详情里就有 aemeath 这种真实标签）
+//
+// 返回候选名 + 一句话来源说明（写进给模型的文本里，它才知道该用哪个词）。
+func (t *FetchHentaiTool) resolveNames(ctx context.Context, dir, query string) (names []string, note string) {
+	t.resolveMu.Lock()
+	if t.cachedResolve != nil {
+		if v, ok := t.cachedResolve[normalizeAlias(query)]; ok {
+			t.resolveMu.Unlock()
+			return v.names, v.note
+		}
+	}
+	t.resolveMu.Unlock()
+
+	// 1) 本地别名
+	if aliases := resolveAliases(dir, query); len(aliases) > 0 {
+		names, note = aliases, "来自本地别名表，下次直接用这个词搜"
+		t.cacheResolve(query, names, note)
+		return names, note
+	}
+
+	// 2) 作品反查：挑输入里最长的一个词当作品名再搜
+	work := longestToken(query)
+	if work == "" {
+		return nil, ""
+	}
+	items, _, err := t.cli.Search(ctx, work)
+	if err != nil || len(items) == 0 {
+		return nil, ""
+	}
+	// 只看前两个本子的标签，够用且省请求
+	seen := map[string]int{}
+	var order []string
+	for i, it := range items {
+		if i >= 2 {
+			break
+		}
+		g, gerr := t.cli.Gallery(ctx, it.ID)
+		if gerr != nil {
+			continue
+		}
+		for _, tg := range g.Tags {
+			if tg.Type != "character" {
+				continue
+			}
+			if seen[tg.Name] == 0 {
+				order = append(order, tg.Name)
+			}
+			seen[tg.Name]++
+		}
+	}
+	if len(order) == 0 {
+		return nil, ""
+	}
+	// 出现次数多的更可能是用户要的角色
+	for i := 0; i < len(order); i++ {
+		for j := i + 1; j < len(order); j++ {
+			if seen[order[j]] > seen[order[i]] {
+				order[i], order[j] = order[j], order[i]
+			}
+		}
+	}
+	if len(order) > 2 {
+		order = order[:2]
+	}
+	note = fmt.Sprintf("从作品「%s」的本子里反查到角色标签", work)
+	t.cacheResolve(query, order, note)
+	return order, note
+}
+
+// longestToken 取输入里最长的词（通常是作品名/角色名，最可能是对的）
+func longestToken(q string) string {
+	var best string
+	for _, w := range strings.Fields(strings.ReplaceAll(q, "_", " ")) {
+		if len([]rune(w)) > len([]rune(best)) {
+			best = w
+		}
+	}
+	return best
 }

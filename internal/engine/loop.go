@@ -377,12 +377,29 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 			})
 		}
 
-		if nudge := e.reminder.Observe(resp.ToolCalls, results); nudge != nil {
+		nudge, abort := e.reminder.Observe(resp.ToolCalls, results)
+		if abort {
+			// 同一个调用重复到上限：与其烧到 300 轮，不如停下来把选择权交回用户
+			log.Printf("[Engine] 检测到原地打转（连续 %d 次相同调用），终止本 Run", e.reminder.Streak())
+			msg := AbortMessage(lastToolName(resp.ToolCalls), e.reminder.Streak())
+			reporter.OnAssistantMessage(ctx, msg)
+			s.Append(schema.Message{Role: schema.RoleAssistant, Content: msg})
+			return nil
+		}
+		if nudge != nil {
 			s.Append(*nudge)
 		}
 	}
 
 	return nil
+}
+
+// lastToolName 打转终止时告诉用户"卡在哪个工具上"
+func lastToolName(calls []schema.ToolCall) string {
+	if len(calls) == 0 {
+		return "工具"
+	}
+	return calls[len(calls)-1].Name
 }
 
 // 为什么要engine自己NewComposer而不是从外层注入？因为这样构造函数少一个参数，代价是engine和文件系统耦合了——要单测Run就得准备真实目录
