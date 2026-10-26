@@ -261,6 +261,9 @@ func (b *Bot) sayToChat(ctx context.Context, chatID, text string) {
 
 // replyCard 用卡片回复某条消息（控制台面板）
 func (r *FeishuReporter) replyCard(ctx context.Context, cardJSON string) error {
+	if r.client == nil { // 单测里没有飞书客户端
+		return nil
+	}
 	// interactive 卡片的 content 就是卡片结构本身，不用 {"text": ...} 包装
 	body := larkim.NewReplyMessageReqBodyBuilder().
 		MsgType("interactive").

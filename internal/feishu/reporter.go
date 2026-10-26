@@ -77,6 +77,9 @@ func (r *FeishuReporter) send(ctx context.Context, text string) {
 }
 
 func (r *FeishuReporter) reply(ctx context.Context, text string) error {
+	if r.client == nil { // 单测里没有飞书客户端
+		return nil
+	}
 	// 用json.Marshal构造content，而不是larkim.NewTextMsgBuilder()
 	// SDK的Text()是裸字符串凭借，不转义引号和反斜杠，输出带"就会变成非法JSON
 	content, err := json.Marshal(map[string]string{"text": text})

@@ -373,3 +373,46 @@ func TestContextReportEmpty(t *testing.T) {
 		t.Errorf("空会话应该直说：%q", got)
 	}
 }
+
+// 任务在跑时发「上下文」：不能中断任务，也不能改历史
+func TestContextCommandDoesNotInterrupt(t *testing.T) {
+	b, s := testBot(t, "oc_ctx", 2)
+	b.eng.SetCompaction(10000, 0)
+	s.Append(schema.Message{Role: schema.RoleUser, Content: "正在跑的任务"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b.cancelers["oc_ctx"] = cancel
+
+	before := s.Len()
+	// 走文本命令入口（它内部会 reply，测试环境 client 为 nil，会被跳过）
+	if !b.handleControlText(context.Background(), "om_x", "oc_ctx", "上下文") {
+		t.Fatal("「上下文」应该被当成命令处理")
+	}
+	if err := ctx.Err(); err != nil {
+		t.Errorf("查上下文不该取消正在跑的任务：%v", err)
+	}
+	if s.Len() != before {
+		t.Errorf("查上下文不该改历史：%d -> %d", before, s.Len())
+	}
+	if !b.isRunning("oc_ctx") {
+		t.Error("任务应该还在跑")
+	}
+}
+
+// 任务在跑时点「压缩」：拒绝并提示先停止（而不是偷偷改历史）
+func TestCompactRefusedWhileRunning(t *testing.T) {
+	b, s := testBot(t, "oc_compact_run", 3)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b.cancelers["oc_compact_run"] = cancel
+
+	before := s.Len()
+	b.handleControlText(context.Background(), "om_x", "oc_compact_run", "压缩")
+	if s.Len() != before {
+		t.Error("跑任务时不该压缩历史")
+	}
+	if err := ctx.Err(); err != nil {
+		t.Error("压缩被拒绝时也不该取消任务")
+	}
+}
