@@ -333,3 +333,22 @@ func TestSessionCompactedInPlace(t *testing.T) {
 	}
 	t.Logf("会话就地压缩：%d -> %d 字符（压缩线 %d）", before, after, eng.CompactionThreshold())
 }
+
+// 跑完必须把会话压回线下：否则面板会报"282%"（本次运行又注入了图片）
+func TestSessionCompactedAfterRun(t *testing.T) {
+	dir := t.TempDir()
+	s := session.New("test-after", dir)
+	p := &fakeProvider{responses: []schema.Message{{Role: schema.RoleAssistant, Content: "好", FinishReason: "stop"}}}
+	eng := NewAgentEngine(p, tools.NewRegistry(), dir, false)
+	eng.SetCompaction(10000, 0) // 压缩线 8000
+
+	// 模拟"这次运行注入了图片"：直接往会话里塞大消息
+	s.Append(schema.Message{Role: schema.RoleUser, Content: strings.Repeat("x", 30000)})
+
+	if err := eng.Run(context.Background(), s, "继续", &spyReporter{onMessage: func(string) {}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := eng.Stats(s).Chars; got >= eng.CompactionThreshold() {
+		t.Errorf("跑完后会话应该被压回线下（%d 字符，线 %d）", got, eng.CompactionThreshold())
+	}
+}

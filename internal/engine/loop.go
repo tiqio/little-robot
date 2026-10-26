@@ -266,24 +266,15 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 
 	log.Printf("[Engine] 会话 %s | 工作区 %s | 已有历史 %d 条", s.ID, e.WorkDir, s.Len())
 
+	// 跑完也压一次：本次运行会往历史里注入图片（一张十几万字符），
+	// 只在开头压的话，结束时报出来的就是 282% 这种"刚压完又超线"的数字。
+	defer e.compactSessionIfNeeded(s)
+
 	// 用户这轮说的话给会话
 	s.Append(schema.Message{Role: schema.RoleUser, Content: userPrompt})
 
-	// 会话就地压缩（ch54）：之前只压"发出去的快照"，会话本身一直涨——
-	// 图片进的是内存（落盘时剥掉），于是内存能涨到 56 万字符、占用显示 542%，
-	// 而磁盘上只有 1.4 万。这里把压缩结果写回会话，数字才会真的降下来，
-	// 重启也不会复原。只换内容不删消息，模型仍能看到"这里曾有过结果"。
-	if e.compactor != nil && e.compactor.MaxChars > 0 {
-		sessMsgs := s.Messages()
-		if before := e.compactor.Estimate(sessMsgs); before >= e.compactor.MaxChars {
-			// 压到压缩线的一半：留出余量，避免"刚压完又超线"每轮抖动
-			compacted, _ := e.compactor.SqueezeTo(sessMsgs, e.compactor.MaxChars/2)
-			if after := e.compactor.Estimate(compacted); after < before {
-				s.Replace(compacted)
-				log.Printf("[Engine] 会话就地压缩：%d -> %d 字符（%d 条消息不变）", before, after, len(compacted))
-			}
-		}
-	}
+	// 开跑前先压一次（历史可能已经被上一次跑大了）
+	e.compactSessionIfNeeded(s)
 
 	// 每个 Run 只规划一次：用户消息触发思考，之后的工具轮直接行动。
 	// 每轮都规划 = 每次工具结果回来都重新想一遍，27B 上纯属烧 token
@@ -689,4 +680,25 @@ func (e *AgentEngine) Stats(s *session.Session) ContextStats {
 		}
 	}
 	return st
+}
+
+// compactSessionIfNeeded 会话超过压缩线就就地压缩（写回内存会话）。
+//
+// 为什么必须落在会话上而不是只压快照：图片进的是内存（落盘时会剥掉），
+// 只压快照的话内存能涨到 48 万字符、占用显示 462%，而磁盘只有 1.4 万。
+// 压到压缩线的一半，留出余量，避免"刚压完又超线"每轮抖动。
+func (e *AgentEngine) compactSessionIfNeeded(s *session.Session) {
+	if e.compactor == nil || e.compactor.MaxChars <= 0 || s == nil {
+		return
+	}
+	sessMsgs := s.Messages()
+	before := e.compactor.Estimate(sessMsgs)
+	if before < e.compactor.MaxChars {
+		return
+	}
+	compacted, _ := e.compactor.SqueezeTo(sessMsgs, e.compactor.MaxChars/2)
+	if after := e.compactor.Estimate(compacted); after < before {
+		s.Replace(compacted)
+		log.Printf("[Engine] 会话就地压缩：%d -> %d 字符（%d 条消息不变）", before, after, len(compacted))
+	}
 }
