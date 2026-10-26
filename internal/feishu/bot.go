@@ -148,18 +148,13 @@ func (b *Bot) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) e
 	}
 	log.Printf("[Feishu] 收到消息 chat=%s：%s", chatID, text)
 
-	reporter := NewFeishuReporter(b.client, messageID)
-
-	// "面板/控制台/按钮"：手机上调出控制卡片（不跑模型，秒回）
-	if isControlCommand(text) {
-		if card := controlCardJSON(""); card != "" {
-			if err := reporter.replyCard(context.Background(), card); err != nil {
-				log.Printf("[Feishu] 发送控制台卡片失败：%v", err)
-				_ = reporter.reply(context.Background(), "发卡片失败："+err.Error())
-			}
-		}
+	// 控制命令（面板/压缩/清理/停止）先进这个分支：不跑模型、秒回，
+	// 而且在抢群锁之前处理——任务正在跑时"停止"才来得及生效
+	if b.handleControlText(context.Background(), messageID, chatID, text) {
 		return nil
 	}
+
+	reporter := NewFeishuReporter(b.client, messageID)
 
 	// 同一个绘画串行，避免两个任务同时修改同一个工作区
 	lock := b.lockFor(chatID)
@@ -324,13 +319,4 @@ func runTimeout() time.Duration {
 		}
 	}
 	return 20 * time.Minute
-}
-
-// isControlCommand 判断是不是"叫出控制台"的命令
-func isControlCommand(text string) bool {
-	switch strings.TrimSpace(text) {
-	case "面板", "控制台", "按钮", "菜单", "menu", "/menu", "控制面板":
-		return true
-	}
-	return false
 }

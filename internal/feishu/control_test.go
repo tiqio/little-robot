@@ -75,9 +75,9 @@ func testBot(t *testing.T, chatID string, history int) (*Bot, *session.Session) 
 // "停止"在没跑任务时只提示，不能报错
 func TestStopWhenIdle(t *testing.T) {
 	b, _ := testBot(t, "oc_idle", 0)
-	resp := b.doStop(context.Background(), "oc_idle")
-	if resp.Toast == nil || !strings.Contains(resp.Toast.Content, "没有正在跑") {
-		t.Errorf("空闲时点停止应该提示没在跑，实际 %+v", resp.Toast)
+	msg, ok := b.perform(cmdStop, "oc_idle")
+	if ok || !strings.Contains(msg, "没有正在跑") {
+		t.Errorf("空闲时点停止应该提示没在跑，实际 (%q, %v)", msg, ok)
 	}
 }
 
@@ -87,9 +87,9 @@ func TestStopCancelsRunning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	b.cancelers["oc_run"] = cancel
 
-	resp := b.doStop(context.Background(), "oc_run")
-	if resp.Toast == nil || resp.Toast.Type != "success" {
-		t.Errorf("应该提示已发送停止信号：%+v", resp.Toast)
+	msg, ok := b.perform(cmdStop, "oc_run")
+	if !ok || !strings.Contains(msg, "收到停止请求") {
+		t.Errorf("应该提示已发送停止信号，实际 (%q, %v)", msg, ok)
 	}
 	<-ctx.Done() // 取消已生效
 }
@@ -102,9 +102,9 @@ func TestCompactButton(t *testing.T) {
 		t.Fatal("压缩前应该有内容")
 	}
 
-	resp := b.doCompact(context.Background(), "oc_compact")
-	if resp.Toast == nil || resp.Toast.Type != "success" {
-		t.Fatalf("压缩应该成功：%+v", resp.Toast)
+	msg, ok := b.perform(cmdCompact, "oc_compact")
+	if !ok {
+		t.Fatalf("压缩应该成功，实际 %q", msg)
 	}
 	after := b.eng.SessionChars(s)
 	if after >= before {
@@ -117,15 +117,15 @@ func TestCompactButton(t *testing.T) {
 	if !strings.Contains(first, "已清理") && !strings.Contains(first, "已折叠") && !strings.Contains(first, "已截断") {
 		t.Errorf("老消息应该变成占位符，实际 %q", first)
 	}
-	t.Logf("压缩：%d -> %d 字符，回执：%s", before, after, resp.Toast.Content)
+	t.Logf("压缩：%d -> %d 字符，回执：%s", before, after, msg)
 }
 
 // 压缩：空历史只提示，不报错
 func TestCompactEmpty(t *testing.T) {
 	b, _ := testBot(t, "oc_empty", 0)
-	resp := b.doCompact(context.Background(), "oc_empty")
-	if resp.Toast == nil || !strings.Contains(resp.Toast.Content, "还没有上下文") {
-		t.Errorf("空历史应该提示不用压缩：%+v", resp.Toast)
+	msg, ok := b.perform(cmdCompact, "oc_empty")
+	if ok || !strings.Contains(msg, "还没有上下文") {
+		t.Errorf("空历史应该提示不用压缩，实际 (%q, %v)", msg, ok)
 	}
 }
 
@@ -145,10 +145,9 @@ func TestClearButton(t *testing.T) {
 	}
 
 	b := &Bot{eng: engine.NewAgentEngine(nil, tools.NewRegistry(), dir, false), sessions: mgr, cancelers: map[string]context.CancelFunc{}}
-	resp := b.doClear(context.Background(), "oc_clear")
-
-	if resp.Toast == nil || resp.Toast.Type != "success" {
-		t.Fatalf("清理应该成功：%+v", resp.Toast)
+	msg, ok := b.perform(cmdClear, "oc_clear")
+	if !ok {
+		t.Fatalf("清理应该成功，实际 %q", msg)
 	}
 	if s.Len() != 0 {
 		t.Errorf("历史应该清空，实际 %d 条", s.Len())
@@ -161,22 +160,28 @@ func TestClearButton(t *testing.T) {
 // 清理：本来就是空的，只提示
 func TestClearEmpty(t *testing.T) {
 	b, _ := testBot(t, "oc_clear_empty", 0)
-	resp := b.doClear(context.Background(), "oc_clear_empty")
-	if resp.Toast == nil || !strings.Contains(resp.Toast.Content, "本来就是空") {
-		t.Errorf("空历史应该提示：%+v", resp.Toast)
+	msg, ok := b.perform(cmdClear, "oc_clear_empty")
+	if ok || !strings.Contains(msg, "本来就是空") {
+		t.Errorf("空历史应该提示，实际 (%q, %v)", msg, ok)
 	}
 }
 
-// 文本命令：面板/控制台能叫出卡片，普通话不算
-func TestIsControlCommand(t *testing.T) {
-	for _, s := range []string{"面板", "控制台", "按钮", "菜单"} {
-		if !isControlCommand(s) {
-			t.Errorf("%q 应该被识别为控制命令", s)
+// 文本命令解析：常用词都能认，普通话不算
+func TestControlCommandOf(t *testing.T) {
+	cases := map[string]string{
+		"压缩": cmdCompact, "压缩上下文": cmdCompact, "/compact": cmdCompact,
+		"清理": cmdClear, "清空上下文": cmdClear, "／clear": cmdClear, // 全角斜杠
+		"停止": cmdStop, "停": cmdStop, "/stop": cmdStop,
+		"面板": "menu", "控制台": "menu", "菜单": "menu",
+	}
+	for in, want := range cases {
+		if got := controlCommandOf(in); got != want {
+			t.Errorf("controlCommandOf(%q) = %q，期望 %q", in, got, want)
 		}
 	}
-	for _, s := range []string{"帮我画个面板", "抓本子", "你好"} {
-		if isControlCommand(s) {
-			t.Errorf("%q 不该被识别为控制命令", s)
+	for _, in := range []string{"帮我画个面板", "抓本子", "你好", "停止一下好不好"} {
+		if got := controlCommandOf(in); got != "" {
+			t.Errorf("%q 不该被当成命令（会误吞正常请求），实际 %q", in, got)
 		}
 	}
 }

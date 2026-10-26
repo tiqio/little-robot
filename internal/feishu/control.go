@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
@@ -91,41 +92,52 @@ func (b *Bot) onCardAction(ctx context.Context, event *callback.CardActionTrigge
 		return toast("error", "拿不到会话 ID"), nil
 	}
 
-	switch cmd {
-	case cmdCompact:
-		return b.doCompact(ctx, chatID), nil
-	case cmdClear:
-		return b.doClear(ctx, chatID), nil
-	case cmdStop:
-		return b.doStop(ctx, chatID), nil
-	default:
-		return toast("info", "未知操作："+cmd), nil
+	msg, ok := b.perform(cmd, chatID)
+	if cmd != cmdStop {
+		// 压缩/清理是共享状态变更，群里也留一条（toast 只有点的人看得见）
+		b.sayToChat(ctx, chatID, msg)
 	}
+	if ok {
+		return toast("success", msg), nil
+	}
+	return toast("info", msg), nil
 }
 
-// doCompact 压缩：把历史折叠成摘要，记忆还在，token 降下来
-func (b *Bot) doCompact(ctx context.Context, chatID string) *callback.CardActionTriggerResponse {
+// perform 执行一个控制动作，返回（给用户看的话, 是否真的做了什么）。
+// 卡片按钮和文本命令都走这里：一份实现，两个入口，不会出现"点了没反应但打字有效"。
+func (b *Bot) perform(cmd, chatID string) (string, bool) {
+	switch cmd {
+	case cmdCompact:
+		return b.performCompact(chatID)
+	case cmdClear:
+		return b.performClear(chatID)
+	case cmdStop:
+		return b.performStop(chatID)
+	}
+	return "未知操作：" + cmd, false
+}
+
+// performCompact 压缩：把历史折叠成摘要，记忆还在，token 降下来
+func (b *Bot) performCompact(chatID string) (string, bool) {
 	s, ok := b.sessions.Get(chatID)
 	if !ok || s.Len() == 0 {
-		return toast("info", "这个群还没有上下文，不用压缩")
+		return "这个群还没有上下文，不用压缩", false
 	}
 	before, after := b.eng.CompactSession(s)
 	if before == after {
-		return toast("info", fmt.Sprintf("已经很紧凑了（%d 字符），压不动", before))
+		return fmt.Sprintf("已经很紧凑了（%d 字符），压不动", before), false
 	}
-	msg := fmt.Sprintf("🧹 已压缩上下文：%d → %d 字符（省 %d%%）", before, after, pct(before, after))
 	// 顺手落盘，别让重启把压缩结果丢掉
 	if path, err := b.sessions.Save(s); err != nil {
 		log.Printf("[Feishu] 压缩后保存失败：%v", err)
 	} else if path != "" {
 		log.Printf("[Feishu] 压缩后已保存：%s", path)
 	}
-	b.sayToChat(ctx, chatID, msg)
-	return toast("success", msg)
+	return fmt.Sprintf("🧹 已压缩上下文：%d → %d 字符（省 %d%%）", before, after, pct(before, after)), true
 }
 
-// doClear 清理：历史清空 + 删掉磁盘上的旧文件，等于重新开始
-func (b *Bot) doClear(ctx context.Context, chatID string) *callback.CardActionTriggerResponse {
+// performClear 清理：历史清空 + 删掉磁盘上的旧文件，等于重新开始
+func (b *Bot) performClear(chatID string) (string, bool) {
 	s, ok := b.sessions.Get(chatID)
 	n := 0
 	dir := ""
@@ -142,26 +154,31 @@ func (b *Bot) doClear(ctx context.Context, chatID string) *callback.CardActionTr
 		}
 	}
 	if n == 0 {
-		return toast("info", "上下文本来就是空的")
+		return "上下文本来就是空的", false
 	}
-	msg := fmt.Sprintf("🗑 已清理上下文（删掉 %d 条历史），这个群从头开始", n)
-	b.sayToChat(ctx, chatID, msg)
-	return toast("success", msg)
+	return fmt.Sprintf("🗑 已清理上下文（删掉 %d 条历史），这个群从头开始", n), true
 }
 
-// doStop 停止：取消正在跑的那次 Run；没有在跑就明确告诉用户，别让人干等
-func (b *Bot) doStop(ctx context.Context, chatID string) *callback.CardActionTriggerResponse {
+// performStop 停止：取消正在跑的那次 Run；没有在跑就明确告诉用户，别让人干等
+func (b *Bot) performStop(chatID string) (string, bool) {
 	b.mu.Lock()
 	cancel, running := b.cancelers[chatID]
 	b.mu.Unlock()
 
 	if !running || cancel == nil {
-		return toast("info", "当前没有正在跑的任务")
+		return "当前没有正在跑的任务", false
 	}
 	cancel()
 	log.Printf("[Feishu] 用户手动停止了 chat=%s 的任务", chatID)
-	b.sayToChat(ctx, chatID, "⏹ 收到停止请求，任务会在当前步骤退出")
-	return toast("success", "已发送停止信号")
+	return "⏹ 收到停止请求，任务会在当前步骤退出", true
+}
+
+// isRunning 这个群现在有没有任务在跑（压缩/清理前要检查，别把跑着的会话改了）
+func (b *Bot) isRunning(chatID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.cancelers[chatID]
+	return ok
 }
 
 // sayToChat 主动往群里发一条文本（卡片回调没有"回复某条消息"的上下文，走 chat_id 发送）
@@ -210,4 +227,64 @@ func pct(before, after int) int {
 		return 0
 	}
 	return (before - after) * 100 / before
+}
+
+// ---- 文本命令：卡片回调没开通时的兜底，也是手机上最快的方式 ----
+
+// controlCommandOf 把一句话解析成控制命令；不是命令返回空串。
+// 用词要短、要好记：手机上是"打两个字"而不是"念一段话"。
+func controlCommandOf(text string) string {
+	t := strings.TrimSpace(text)
+	// 全角斜杠也认（中文输入法默认打出来的就是／）
+	t = strings.ReplaceAll(t, "／", "/")
+	switch strings.ToLower(t) {
+	case "压缩", "压缩上下文", "/compact", "compact", "压一下":
+		return cmdCompact
+	case "清理", "清理上下文", "清空", "清空上下文", "/clear", "clear":
+		return cmdClear
+	case "停止", "停下", "停", "中断", "/stop", "stop":
+		return cmdStop
+	case "面板", "控制台", "控制面板", "按钮", "菜单", "/menu", "menu":
+		return "menu"
+	}
+	return ""
+}
+
+// handleControlText 处理文本控制命令；返回 true = 这条消息已被消费，不该再进模型。
+// 关键点：这个分支在抢锁之前处理，所以任务正在跑时"停止"照样生效。
+func (b *Bot) handleControlText(ctx context.Context, messageID, chatID, text string) bool {
+	cmd := controlCommandOf(text)
+	if cmd == "" {
+		return false
+	}
+	reporter := NewFeishuReporter(b.client, messageID)
+
+	if cmd == "menu" {
+		if card := controlCardJSON(""); card != "" {
+			if err := reporter.replyCard(ctx, card); err != nil {
+				log.Printf("[Feishu] 发送控制台卡片失败：%v", err)
+				_ = reporter.reply(ctx, "卡片发不出去（可能是卡片回调没开通）：\n"+
+					"直接发「压缩」「清理」「停止」也能用。错误："+err.Error())
+			}
+		}
+		return true
+	}
+
+	// 压缩/清理会改历史，跑着的时候先让用户停
+	if cmd != cmdStop && b.isRunning(chatID) {
+		_ = reporter.reply(ctx, "任务正在跑，先发「停止」再"+map[string]string{
+			cmdCompact: "压缩", cmdClear: "清理",
+		}[cmd])
+		return true
+	}
+
+	msg, ok := b.perform(cmd, chatID)
+	out := msg
+	if !ok {
+		out = "（不用做）" + msg
+	}
+	if err := reporter.reply(ctx, out); err != nil {
+		log.Printf("[Feishu] 控制命令回复失败：%v", err)
+	}
+	return true
 }
