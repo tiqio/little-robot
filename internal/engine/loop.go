@@ -67,11 +67,10 @@ func (e *AgentEngine) callModel(ctx context.Context, history []schema.Message, t
 		before := e.compactor.Estimate(history)
 		after := e.compactor.Estimate(squeezed)
 		log.Printf("[Engine] 上下文超限，压缩后重试：%d -> %d 字符", before, after)
-		if after < before {
-			resp2, err2 := e.provider.Generate(ctx, squeezed, toolDefs)
-			return resp2, squeezed, true, err2
-		}
-		return nil, history, noImages, err
+		// 不管压没压动都重试一次：有时是我们的估算比模型实际窗口乐观，
+		// 剥掉图片/占位符之后模型可能就吃得下了。再失败就如实上报。
+		resp2, err2 := e.provider.Generate(ctx, squeezed, toolDefs)
+		return resp2, squeezed, true, err2
 	}
 
 	if !errors.Is(err, provider.ErrImageRejected) {
@@ -180,6 +179,11 @@ func (e *AgentEngine) SetCompaction(contextTokens int, ratio float64) {
 	}
 	maxChars := int(float64(contextTokens) * ratio * charsPerToken)
 	e.compactor = session.NewCompactor(maxChars, keep)
+	// 保护区不能超过压缩线的一半：窗口小的时候（比如 8000 字符的线）
+	// 固定 4 万字的保护区会让"压完还在线上"，于是每轮反复压（抖动）
+	if e.compactor.ProtectChars > maxChars/2 {
+		e.compactor.ProtectChars = maxChars / 2
+	}
 	e.contextTokens = contextTokens
 	log.Printf("[Engine] 上下文窗口 %d tokens，压缩阈值 %d 字符", contextTokens, e.compactor.MaxChars)
 }
@@ -264,6 +268,22 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 
 	// 用户这轮说的话给会话
 	s.Append(schema.Message{Role: schema.RoleUser, Content: userPrompt})
+
+	// 会话就地压缩（ch54）：之前只压"发出去的快照"，会话本身一直涨——
+	// 图片进的是内存（落盘时剥掉），于是内存能涨到 56 万字符、占用显示 542%，
+	// 而磁盘上只有 1.4 万。这里把压缩结果写回会话，数字才会真的降下来，
+	// 重启也不会复原。只换内容不删消息，模型仍能看到"这里曾有过结果"。
+	if e.compactor != nil && e.compactor.MaxChars > 0 {
+		sessMsgs := s.Messages()
+		if before := e.compactor.Estimate(sessMsgs); before >= e.compactor.MaxChars {
+			// 压到压缩线的一半：留出余量，避免"刚压完又超线"每轮抖动
+			compacted, _ := e.compactor.SqueezeTo(sessMsgs, e.compactor.MaxChars/2)
+			if after := e.compactor.Estimate(compacted); after < before {
+				s.Replace(compacted)
+				log.Printf("[Engine] 会话就地压缩：%d -> %d 字符（%d 条消息不变）", before, after, len(compacted))
+			}
+		}
+	}
 
 	// 每个 Run 只规划一次：用户消息触发思考，之后的工具轮直接行动。
 	// 每轮都规划 = 每次工具结果回来都重新想一遍，27B 上纯属烧 token

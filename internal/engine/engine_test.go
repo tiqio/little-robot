@@ -294,10 +294,42 @@ func TestContextOverflowRecovers(t *testing.T) {
 	if p.calls != 2 {
 		t.Fatalf("应该 2 次调用（超限 + 压缩后重试），实际 %d", p.calls)
 	}
-	if p.sizes[1] >= p.sizes[0] {
-		t.Errorf("重试时的历史应该更短：%d -> %d", p.sizes[0], p.sizes[1])
+	// 重试用的历史不能变长（会话已经在"就地压缩"那一步变小了，这里允许相等）
+	if p.sizes[1] > p.sizes[0] {
+		t.Errorf("重试时的历史不该变大：%d -> %d", p.sizes[0], p.sizes[1])
 	}
 	if !strings.Contains(got, "压完就答出来了") {
 		t.Errorf("重试成功后应该把答案发给用户，实际 %q", got)
 	}
+}
+
+// 会话超过压缩线要就地压缩：数字会真的降下来，而不是只压发出去的快照
+func TestSessionCompactedInPlace(t *testing.T) {
+	dir := t.TempDir()
+	s := session.New("test-inplace", dir)
+	// 塞到超过压缩线（窗口 10000 → 压缩线 8000 字符）
+	for i := 0; i < 20; i++ {
+		s.Append(schema.Message{Role: schema.RoleUser, ToolCallID: "c", Content: strings.Repeat("旧结果", 500)})
+	}
+	p := &fakeProvider{responses: []schema.Message{{Role: schema.RoleAssistant, Content: "好", FinishReason: "stop"}}}
+	eng := NewAgentEngine(p, tools.NewRegistry(), dir, false)
+	eng.SetCompaction(10000, 0) // 压缩线 8000
+
+	before := eng.Stats(s).Chars
+	if before < eng.CompactionThreshold() {
+		t.Fatalf("测试数据应该超过压缩线：%d < %d", before, eng.CompactionThreshold())
+	}
+
+	if err := eng.Run(context.Background(), s, "继续", &spyReporter{onMessage: func(string) {}}); err != nil {
+		t.Fatal(err)
+	}
+
+	after := eng.Stats(s).Chars
+	if after >= before {
+		t.Errorf("会话应该被就地压缩：%d -> %d", before, after)
+	}
+	if after >= eng.CompactionThreshold() {
+		t.Errorf("压缩后应该低于压缩线（%d），实际 %d", eng.CompactionThreshold(), after)
+	}
+	t.Logf("会话就地压缩：%d -> %d 字符（压缩线 %d）", before, after, eng.CompactionThreshold())
 }
