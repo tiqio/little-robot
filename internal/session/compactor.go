@@ -2,11 +2,12 @@ package session
 
 import (
 	"fmt"
+	"log"
+	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"little-robot/internal/schema"
-
-	"log"
 )
 
 // 压缩不是删除内容，而是换内容，如果把很久以前的工具结果整条删掉会出事，所以正确的做法是，消息一条不删除，为止不懂，只把它们的内容换成一句占位符
@@ -209,4 +210,120 @@ func clipMiddle(s string, head, tail int) string {
 		return s
 	}
 	return string(r[:head]) + fmt.Sprintf("\n\n...[中间%d字符已截断]...\n\n", len(r)-head-tail) + string(r[len(r)-tail:]) // rune是一个Unicode码点，就是一个字，string(r)在反向编码
+}
+
+// SqueezeTo 压到"预算之内"为止，返回（压缩结果, 是否用了折叠兜底）。
+//
+// 为什么需要预算而不是"保留最近 N 条"：保护区里的单条消息可能就有几十万字符
+// （图片 data URL、write_file 的巨型参数），只保留 3 条照样 300K。
+// 真实事故：压完 300936 → 300656，只掉了 280 字符，然后模型预填充 38 分钟。
+func (c *Compactor) SqueezeTo(msgs []schema.Message, maxChars int) ([]schema.Message, bool) {
+	out := c.Squeeze(msgs)
+	if maxChars <= 0 || c.estimate(out) <= maxChars {
+		return out, false
+	}
+
+	// 第一轮: 剥掉所有图片（data URL 是最常见的体积来源）
+	stripped := StripImages(out)
+	if c.estimate(stripped) <= maxChars {
+		return stripped, false
+	}
+
+	// 第二轮: 连保护区也收成 1 条、头尾各 400 字符
+	tight := (&Compactor{MaxChars: 0, RetainLast: 1, ClipHead: 400, ClipTail: 400}).compact(stripped)
+	if c.estimate(tight) <= maxChars {
+		return tight, false
+	}
+
+	// 第三轮: 折叠成一条摘要——宁可丢细节，也不能让请求发不出去
+	return Summarize(stripped, maxChars), true
+}
+
+// Summarize 把整段历史折叠成"一句摘要 + 最后一条用户消息"。
+// 这是最后一道闸：保证 prompt 一定小，而不是赌模型能读懂 30 万字符。
+func Summarize(msgs []schema.Message, maxChars int) []schema.Message {
+	var system []schema.Message
+	var lastUser string
+	var dropped int
+	for _, m := range msgs {
+		switch m.Role {
+		case schema.RoleSystem:
+			system = append(system, m)
+			continue
+		case schema.RoleUser:
+			if m.ToolCallID == "" && strings.TrimSpace(m.Content) != "" {
+				lastUser = m.Content
+			}
+		}
+		dropped++
+	}
+	note := fmt.Sprintf("（上下文已折叠：前面 %d 条记录因为超出模型窗口被省略。如果你需要之前的细节，请让用户重新描述，或用工具重新获取。）", dropped)
+	// 按**字节**截断最后那条用户消息：budget 是字符/字节口径，
+	// 用 rune 截会因为中文 3 字节/字而超预算（真实踩过：预算 5000 压完 7694）
+	if keep := maxChars - len(note) - 64; keep > 100 && len(lastUser) > keep {
+		b := []byte(lastUser)[:keep]
+		for len(b) > 0 && !utf8.Valid(b) {
+			b = b[:len(b)-1]
+		}
+		lastUser = string(b) + "…"
+	}
+	if lastUser != "" {
+		note += "\n\n当前请求：" + lastUser
+	}
+	out := append(system, schema.Message{Role: schema.RoleUser, Content: note})
+	log.Printf("[Compactor] 已折叠成摘要：%d 条 → %d 条（%d 字符）", len(msgs), len(out), estimateOf(out))
+	return out
+}
+
+// StripImages 剥掉所有图片，换成一句占位（任何位置都剥）
+func StripImages(msgs []schema.Message) []schema.Message {
+	out := make([]schema.Message, len(msgs))
+	copy(out, msgs)
+	for i := range out {
+		if len(out[i].Images) == 0 {
+			continue
+		}
+		n := len(out[i].Images)
+		out[i].Images = nil
+		note := ImageNote(n)
+		if strings.TrimSpace(out[i].Content) == "" {
+			out[i].Content = note
+		} else {
+			out[i].Content += "\n" + note
+		}
+	}
+	return out
+}
+
+func estimateOf(msgs []schema.Message) int {
+	return (&Compactor{}).estimate(msgs)
+}
+
+// TopMessages 返回体积最大的几条消息（角色 + 字节数），用于诊断"为什么这么大"
+func TopMessages(msgs []schema.Message, n int) []string {
+	type item struct {
+		idx  int
+		size int
+		role schema.Role
+	}
+	items := make([]item, 0, len(msgs))
+	for i, m := range msgs {
+		size := len(m.Content)
+		for _, tc := range m.ToolCalls {
+			size += len(tc.Arguments) + len(tc.Name)
+		}
+		for _, img := range m.Images {
+			size += len(img)
+		}
+		items = append(items, item{i, size, m.Role})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].size > items[j].size })
+	if n > len(items) {
+		n = len(items)
+	}
+	out := make([]string, 0, n)
+	for _, it := range items[:n] {
+		out = append(out, fmt.Sprintf("#%d %s %d 字符", it.idx, it.role, it.size))
+	}
+	return out
 }

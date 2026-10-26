@@ -75,7 +75,7 @@ func testBot(t *testing.T, chatID string, history int) (*Bot, *session.Session) 
 // "停止"在没跑任务时只提示，不能报错
 func TestStopWhenIdle(t *testing.T) {
 	b, _ := testBot(t, "oc_idle", 0)
-	msg, ok := b.perform(cmdStop, "oc_idle")
+	msg, ok := b.perform(context.Background(), cmdStop, "oc_idle")
 	if ok || !strings.Contains(msg, "没有正在跑") {
 		t.Errorf("空闲时点停止应该提示没在跑，实际 (%q, %v)", msg, ok)
 	}
@@ -87,7 +87,7 @@ func TestStopCancelsRunning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	b.cancelers["oc_run"] = cancel
 
-	msg, ok := b.perform(cmdStop, "oc_run")
+	msg, ok := b.perform(context.Background(), cmdStop, "oc_run")
 	if !ok || !strings.Contains(msg, "收到停止请求") {
 		t.Errorf("应该提示已发送停止信号，实际 (%q, %v)", msg, ok)
 	}
@@ -102,7 +102,7 @@ func TestCompactButton(t *testing.T) {
 		t.Fatal("压缩前应该有内容")
 	}
 
-	msg, ok := b.perform(cmdCompact, "oc_compact")
+	msg, ok := b.perform(context.Background(), cmdCompact, "oc_compact")
 	if !ok {
 		t.Fatalf("压缩应该成功，实际 %q", msg)
 	}
@@ -123,7 +123,7 @@ func TestCompactButton(t *testing.T) {
 // 压缩：空历史只提示，不报错
 func TestCompactEmpty(t *testing.T) {
 	b, _ := testBot(t, "oc_empty", 0)
-	msg, ok := b.perform(cmdCompact, "oc_empty")
+	msg, ok := b.perform(context.Background(), cmdCompact, "oc_empty")
 	if ok || !strings.Contains(msg, "还没有上下文") {
 		t.Errorf("空历史应该提示不用压缩，实际 (%q, %v)", msg, ok)
 	}
@@ -145,7 +145,7 @@ func TestClearButton(t *testing.T) {
 	}
 
 	b := &Bot{eng: engine.NewAgentEngine(nil, tools.NewRegistry(), dir, false), sessions: mgr, cancelers: map[string]context.CancelFunc{}}
-	msg, ok := b.perform(cmdClear, "oc_clear")
+	msg, ok := b.perform(context.Background(), cmdClear, "oc_clear")
 	if !ok {
 		t.Fatalf("清理应该成功，实际 %q", msg)
 	}
@@ -160,7 +160,7 @@ func TestClearButton(t *testing.T) {
 // 清理：本来就是空的，只提示
 func TestClearEmpty(t *testing.T) {
 	b, _ := testBot(t, "oc_clear_empty", 0)
-	msg, ok := b.perform(cmdClear, "oc_clear_empty")
+	msg, ok := b.perform(context.Background(), cmdClear, "oc_clear_empty")
 	if ok || !strings.Contains(msg, "本来就是空") {
 		t.Errorf("空历史应该提示，实际 (%q, %v)", msg, ok)
 	}

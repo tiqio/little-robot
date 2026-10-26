@@ -62,8 +62,8 @@ func (e *AgentEngine) callModel(ctx context.Context, history []schema.Message, t
 	// 上下文超限：把历史狠压一遍（连图一起剥）再发一次。
 	// 自动压缩按 65% 阈值压、保护区还留 36 条，撞线时往往压得不够狠。
 	if errors.Is(err, provider.ErrContextOverflow) {
-		squeezed, _ := stripImages(history)
-		squeezed = e.compactor.Squeeze(squeezed) // 急救：能截的都截，先让请求发得出去
+		budget := e.contextTokens * 2 / 10
+		squeezed, _ := e.compactor.SqueezeTo(history, budget) // 急救：压到预算内，实在不行折叠成摘要
 		before := e.compactor.Estimate(history)
 		after := e.compactor.Estimate(squeezed)
 		log.Printf("[Engine] 上下文超限，压缩后重试：%d -> %d 字符", before, after)
@@ -261,9 +261,15 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 		// 与其让后端回 400 再补救，不如发之前就压好（少一次失败、少一次等待）
 		if e.contextTokens > 0 && e.compactor.Estimate(history)/charsPerToken > e.contextTokens*9/10 {
 			before := e.compactor.Estimate(history)
-			history = e.compactor.Squeeze(history) // 贴线时用急救档，别留 21 万 token 让本地模型慢慢预填充
-			log.Printf("[Engine] 上下文逼近窗口（%d 字符 ≈ %d token / 窗口 %d），强制压缩到 %d 字符",
-				before, before/charsPerToken, e.contextTokens, e.compactor.Estimate(history))
+			// 预算 = 窗口的 10%（字符 ≈ token×2）：13 万 token 的窗口压到 2.6 万字符，
+			// 本地 65 tok/s 的预填充约 3.5 分钟，还在可接受范围。
+			budget := e.contextTokens * 2 / 10
+			var folded bool
+			history, folded = e.compactor.SqueezeTo(history, budget)
+			log.Printf("[Engine] 上下文逼近窗口（%d 字符 ≈ %d token / 窗口 %d token），压到 %d 字符（折叠=%v）",
+				before, before/charsPerToken, e.contextTokens, e.compactor.Estimate(history), folded)
+			// 诊断：说清楚"大块头"到底是谁，否则永远不知道 30 万字符从哪来
+			log.Printf("[Engine] 最大消息：%s", strings.Join(session.TopMessages(history, 3), " | "))
 		}
 
 		var thinking string

@@ -93,7 +93,7 @@ func (b *Bot) onCardAction(ctx context.Context, event *callback.CardActionTrigge
 		return toast("error", "拿不到会话 ID"), nil
 	}
 
-	msg, ok := b.perform(cmd, chatID)
+	msg, ok := b.perform(ctx, cmd, chatID)
 	if cmd != cmdStop {
 		// 压缩/清理是共享状态变更，群里也留一条（toast 只有点的人看得见）
 		b.sayToChat(ctx, chatID, msg)
@@ -106,12 +106,12 @@ func (b *Bot) onCardAction(ctx context.Context, event *callback.CardActionTrigge
 
 // perform 执行一个控制动作，返回（给用户看的话, 是否真的做了什么）。
 // 卡片按钮和文本命令都走这里：一份实现，两个入口，不会出现"点了没反应但打字有效"。
-func (b *Bot) perform(cmd, chatID string) (string, bool) {
+func (b *Bot) perform(ctx context.Context, cmd, chatID string) (string, bool) {
 	switch cmd {
 	case cmdCompact:
 		return b.performCompact(chatID)
 	case cmdClear:
-		return b.performClear(chatID)
+		return b.performClear(ctx, chatID)
 	case cmdStop:
 		return b.performStop(chatID)
 	}
@@ -138,26 +138,50 @@ func (b *Bot) performCompact(chatID string) (string, bool) {
 }
 
 // performClear 清理：历史清空 + 删掉磁盘上的旧文件，等于重新开始
-func (b *Bot) performClear(chatID string) (string, bool) {
-	s, ok := b.sessions.Get(chatID)
+func (b *Bot) performClear(ctx context.Context, chatID string) (string, bool) {
+	// 内存里的会话（热）和磁盘上的文件（冷）是两件事，必须都清。
+	// 真实事故：bot 刚重启、会话还没被加载时点"清理"，
+	// 代码只查了内存 → 判定"本来就是空的"，磁盘文件原样留着，
+	// 下一条消息把 191 条旧历史又加载回来（用户看到的就是"清了没用"）。
 	n := 0
-	dir := ""
-	if ok {
+	dirs := map[string]bool{}
+	if s, ok := b.sessions.Get(chatID); ok {
 		n = s.Len()
-		dir = s.StoreDir()
+		if d := s.StoreDir(); d != "" {
+			dirs[d] = true
+		}
 		s.Reset()
 	}
-	// 磁盘上的旧历史也要删：不然重启后又"复活"了
-	if dir != "" {
+	// 不管有没有热会话，都按这个群的工作目录算一遍磁盘路径
+	if d := b.sessDirFor(ctx, chatID); d != "" {
+		dirs[d] = true
+	}
+
+	for dir := range dirs {
 		path := filepath.Join(dir, session.SafeName(chatID)+".json")
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			log.Printf("[Feishu] 删除会话文件失败：%v", err)
+		if err := os.Remove(path); err != nil {
+			if !os.IsNotExist(err) {
+				log.Printf("[Feishu] 删除会话文件失败（%s）：%v", path, err)
+			}
+			continue
+		}
+		log.Printf("[Feishu] 已删除会话文件：%s", path)
+		if n == 0 {
+			n = 1 // 至少证明磁盘上有东西被清掉了
 		}
 	}
 	if n == 0 {
 		return "上下文本来就是空的", false
 	}
-	return fmt.Sprintf("🗑 已清理上下文（删掉 %d 条历史），这个群从头开始", n), true
+	return "🗑 已清理上下文（内存历史 + 磁盘存档），这个群从头开始", true
+}
+
+// sessDirFor 算出这个群的会话落盘目录；拿不到就返回空串（单测环境没有 chatDirs）
+func (b *Bot) sessDirFor(ctx context.Context, chatID string) string {
+	if b.chatDirs == nil {
+		return ""
+	}
+	return filepath.Join(b.workDirFor(ctx, chatID), ".claw", "sessions")
 }
 
 // performStop 停止：取消正在跑的那次 Run；没有在跑就明确告诉用户，别让人干等
@@ -286,7 +310,7 @@ func (b *Bot) handleControlText(ctx context.Context, messageID, chatID, text str
 		return true
 	}
 
-	msg, ok := b.perform(cmd, chatID)
+	msg, ok := b.perform(ctx, cmd, chatID)
 	out := msg
 	if !ok {
 		out = "（不用做）" + msg
