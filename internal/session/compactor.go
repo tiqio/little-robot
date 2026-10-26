@@ -46,9 +46,10 @@ const (
 	defaultClipTail = 4000
 )
 
-// 保护区体积预算：只保最近 2 万字符（约 1 万 token）。
-// 本地模型预填充只有 65~130 token/s，prompt 每多 1 万 token 就多 1~2 分钟等待。
-const defaultProtectChars = 20000
+// 保护区体积预算：默认保最近 4 万字符（约 2 万 token 的近期记忆）。
+// 太小会导致"刚发生的事也忘了"（试过 2 万，模型反复抓同一本）；
+// 太大则每次预填充都要几分钟。可用 COMPACT_PROTECT_CHARS 覆盖。
+const defaultProtectChars = 40000
 
 // 用户点"压缩"：比自动更狠一点（保护区 8 条、每条留 2500+2500）
 const (
@@ -114,24 +115,6 @@ func (c *Compactor) compact(msgs []schema.Message) []schema.Message {
 	// 不管在不在保护区，都只保留最近 keepRecentImages 条带图消息——
 	// 模型只需要看"当前这张"，历史图片可以随时用 view_image 重新看。
 	// 真实事故：每轮注入 1 张封面图，36 条保护区全留着，上下文涨到 55 万字符。
-	const keepRecentImages = 2
-	var imageIdxs []int
-	for i := range msgs {
-		if len(msgs[i].Images) > 0 {
-			imageIdxs = append(imageIdxs, i)
-		}
-	}
-	keepImage := map[int]bool{}
-	if len(imageIdxs) > keepRecentImages {
-		for _, i := range imageIdxs[len(imageIdxs)-keepRecentImages:] {
-			keepImage[i] = true
-		}
-	} else {
-		for _, i := range imageIdxs {
-			keepImage[i] = true
-		}
-	}
-
 	// 保护区的七点：索引 >= protectFrom的消息不动内容
 	protectFrom := len(msgs) - c.RetainLast
 	if protectFrom < 0 {
@@ -151,6 +134,34 @@ func (c *Compactor) compact(msgs []schema.Message) []schema.Message {
 		}
 		if cut > protectFrom {
 			protectFrom = cut
+		}
+	}
+
+	const keepRecentImages = 2
+	var imageIdxs []int
+	for i := range msgs {
+		if len(msgs[i].Images) > 0 {
+			imageIdxs = append(imageIdxs, i)
+		}
+	}
+	// newestImage 无论预算多紧都保留：模型必须看得到"当前这张图"
+	newestImage := -1
+	if len(imageIdxs) > 0 {
+		newestImage = imageIdxs[len(imageIdxs)-1]
+	}
+	// 其余只保留保护区里最近的几张，避免"2 张 × 10 万字符"长期占着上下文
+	keepImage := map[int]bool{}
+	if newestImage >= 0 {
+		keepImage[newestImage] = true
+	}
+	keptRecent := 0
+	for i := len(imageIdxs) - 1; i >= 0; i-- {
+		if keptRecent >= keepRecentImages {
+			break
+		}
+		if imageIdxs[i] >= protectFrom {
+			keepImage[imageIdxs[i]] = true
+			keptRecent++
 		}
 	}
 
@@ -188,7 +199,9 @@ func (c *Compactor) compact(msgs []schema.Message) []schema.Message {
 		// 老的图片消息（ch34/S3 + ch46）：data URL 是 base64，一张几百 KB，
 		// 留在历史里每轮都重新喂给模型。原图还在磁盘上，view_image 能找回来，
 		// 所以历史里留一句"看过图"的占位就够
-		if m.Role == schema.RoleUser && len(m.Images) > 0 && (!inWorkingMemory || !keepImage[i]) {
+		// 注意顺序：最近 2 条带图消息无论在哪都要保住（keepImage 优先），
+		// 否则"预算不足 → 保护区收缩"会把**当前这张**也剥掉，模型永远看不到图
+		if m.Role == schema.RoleUser && len(m.Images) > 0 && !keepImage[i] {
 			n := len(m.Images)
 			m.Images = nil
 			note := ImageNote(n)

@@ -54,7 +54,8 @@ func main() {
 
 	// 5. 心脏
 	eng := engine.NewAgentEngine(tracker, registry, workDir, llm.Thinking)
-	eng.SetContextTokens(llm.ContextTokens)
+	eng.SetCompaction(llm.ContextTokens, llm.CompactionRatio)
+	eng.SetProtectChars(llm.ProtectChars)
 	eng.SetThinkingBudgets(llm.ThinkTokens, llm.ActTokens)
 	//eng.PlanMode = true
 	registry.Register(tools.NewSubagentTool(eng, subReg))

@@ -82,3 +82,23 @@ func TestCompactorKeepsOnlyRecentImages(t *testing.T) {
 		t.Error("最新一条的图必须保留（模型要看当前这张）")
 	}
 }
+
+// 回归：预算极小时，也不能把"最新那张图"剥掉（模型必须能看当前图）
+func TestCompactorAlwaysKeepsNewestImage(t *testing.T) {
+	// 预算 500 字符，但图片本身就有 9000 字符
+	c := NewCompactor(500, 36)
+	c.ProtectChars = 500
+	img := []string{"data:image/jpeg;base64," + strings.Repeat("A", 9000)}
+	msgs := []schema.Message{
+		{Role: schema.RoleUser, Content: "老消息", Images: img},
+		{Role: schema.RoleUser, Content: "当前这张", Images: img},
+		{Role: schema.RoleUser, Content: "问题"},
+	}
+	out := c.Compact(msgs)
+	if len(out[1].Images) == 0 {
+		t.Error("最新那张图必须保留（否则模型看不到当前图）")
+	}
+	if len(out[0].Images) != 0 {
+		t.Error("更老的图应该被剥掉")
+	}
+}

@@ -179,7 +179,8 @@ func main() {
 	// eng := engine.NewAgentEngine(&mockProvider{}, &mockRegistry{}, workDir, true)
 	//eng := engine.NewAgentEngine(p, registry, workDir, false)
 	eng := engine.NewAgentEngine(tracker, registry, workDir, opts.Think)
-	eng.SetContextTokens(llm.ContextTokens)
+	eng.SetCompaction(llm.ContextTokens, llm.CompactionRatio)
+	eng.SetProtectChars(llm.ProtectChars)
 	eng.SetThinkingBudgets(llm.ThinkTokens, llm.ActTokens)
 	eng.PlanMode = opts.Plan // 打开计划模式
 

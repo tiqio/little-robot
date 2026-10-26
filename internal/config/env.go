@@ -79,3 +79,15 @@ func Bool(key string, def bool) bool {
 	}
 	return def
 }
+
+// Float 读取 float 环境变量；解析失败或 <=0 时用默认值。
+// 压缩比例这类"0.1~0.9 之间的小数"配置走这里。
+func Float(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err == nil && f > 0 {
+			return f
+		}
+	}
+	return def
+}

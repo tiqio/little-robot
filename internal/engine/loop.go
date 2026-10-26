@@ -148,7 +148,7 @@ const charsPerToken = 2
 //
 // 65% 意味着要等十几分钟才"开始压"，用户看到的就是"卡住不动"。
 // 15% 让 prompt 稳定在 2 万 token 以内，响应时间可控。
-const contextFillRatio = 0.15
+const contextFillRatio = 0.40
 
 func defaultMaxChars(contextTokens int) int {
 	if contextTokens <= 0 {
@@ -159,14 +159,37 @@ func defaultMaxChars(contextTokens int) int {
 
 // SetContextTokens 按模型上下文窗口重设压缩阈值。
 // 窗口越大能留的原话越多；本地模型窗口小（或跑不动大窗口）时必须调小。
+// SetContextTokens 按模型窗口重设压缩阈值。
+// ratio<=0 时用默认 0.40；protectChars<=0 时用 30000。
 func (e *AgentEngine) SetContextTokens(contextTokens int) {
+	e.SetCompaction(contextTokens, 0)
+}
+
+// SetCompaction 显式指定"窗口 / 压缩阈值比例 / 保护区体积预算"，
+// 让外壳能用环境变量调，不用改代码重编。
+func (e *AgentEngine) SetCompaction(contextTokens int, ratio float64) {
+	if contextTokens <= 0 {
+		contextTokens = 128 * 1024
+	}
+	if ratio <= 0 {
+		ratio = contextFillRatio
+	}
 	keep := 36
 	if e.compactor != nil {
 		keep = e.compactor.RetainLast
 	}
-	e.compactor = session.NewCompactor(defaultMaxChars(contextTokens), keep)
+	maxChars := int(float64(contextTokens) * ratio * charsPerToken)
+	e.compactor = session.NewCompactor(maxChars, keep)
 	e.contextTokens = contextTokens
 	log.Printf("[Engine] 上下文窗口 %d tokens，压缩阈值 %d 字符", contextTokens, e.compactor.MaxChars)
+}
+
+// SetProtectChars 设置保护区体积预算（0 = 用默认 4 万字符）
+func (e *AgentEngine) SetProtectChars(n int) {
+	if n > 0 && e.compactor != nil {
+		e.compactor.ProtectChars = n
+		log.Printf("[Engine] 保护区预算 %d 字符", n)
+	}
 }
 
 // SetThinkingBudgets 给思考段/行动段分别设输出预算（ch33/S2）。

@@ -27,7 +27,7 @@ fetch_hentai：从 nhentai（最大的免费本子库）抓本子。
 两种用法：
 - id_or_url：本子的数字或链接（12345 / 123-abc / https://nhentai.net/g/12345/）
   抓封面 + 整本，存到工作区，封面回传给模型"看"。
-- query：搜索模式，返回前 5 个候选（前 3 个封面会回传给模型看），
+- query：搜索模式，返回前 5 个候选（标题+作者+页数，封面存盘可用 view_image 看），
   挑定后带 id_or_url 再调一次。
 
 format=pdf（默认）：整本合成一个 PDF（不加密，手机上直接翻页预览）→ send 一次发齐；
@@ -84,7 +84,8 @@ func (t *FetchHentaiTool) Definition() schema.ToolDefinition {
 A. id_or_url：本子数字或链接（12345 / 123-abc / https://nhentai.net/g/12345/）。
    抓回封面 + 整本，封面会附在返回里，先看一眼是不是用户要的那本。
 B. query：搜索模式（"sonohara"、"artist:xxx language:english"、"tag:\"big breasts\" pages:>10"）。
-   返回前 5 个候选（前 3 个封面已附上），挑一个再用 id_or_url 调一次。
+   返回前 5 个候选，挑一个再用 id_or_url 调一次。
+   候选不含图片（省上下文）：要核对封面就 view_image(out/hentai/_search/thumb_<id>.jpg)。
 C. page：最新本子列表的第 N 页（对应官网 https://nhentai.net/?page=N，第 1 页 = 最新）。
    用户说"看看今天/最近有什么新本子"就用它，page 不填就是第 1 页。
 
@@ -182,7 +183,10 @@ func (t *FetchHentaiTool) Execute(ctx context.Context, args json.RawMessage) (st
 	if coverData != nil {
 		if werr := os.WriteFile(filepath.Join(dir, coverRel), coverData, 0o644); werr == nil {
 			hasCover = true
-			attachImage(ctx, filepath.Join(dir, coverRel)) // 封面回传给模型"看着挑"
+			// 注意：封面**不**进模型上下文。
+			// 一张封面的 data URL ≈ 10 万字符，进了历史就会每轮都被重新喂一遍，
+			// 结果是"每轮都超阈值、每轮都压缩、模型每轮失忆"（线上实测就是这样）。
+			// 判断对不对味靠标题/作者/角色标签就够了；真要核对，模型可以用 view_image。
 		}
 	} else {
 		coverNote = "（封面和第 1 页都没抓到，不影响整本）"
@@ -405,23 +409,19 @@ func (t *FetchHentaiTool) listMode(ctx context.Context, dir, heading string, ite
 		b.WriteString(fmt.Sprintf("%d. id=%d 《%s》 %d页 ♥%d\n", i+1, it.ID, title, it.NumPages, it.NumFavorites))
 	}
 
-	// 只挂第一个封面：够模型判断"这批对不对味"，又不至于把窗口吃光
-	for i, it := range items {
-		if i >= 1 {
-			break
+	// 缩略图只存盘、不进上下文：data URL 一张 ≈ 10 万字符，
+	// 每轮都喂给模型足以把历史撑爆，并触发"每轮压缩 → 每轮失忆"的恶性循环。
+	// 文本里给路径，需要看再用 view_image；用户端则有 send 发真图。
+	if len(items) > 0 {
+		it := items[0]
+		if data, terr := t.cli.FetchThumb(ctx, it.ThumbPath); terr == nil {
+			rel := filepath.Join("out", "hentai", "_search", fmt.Sprintf("thumb_%d.jpg", it.ID))
+			if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(rel)), 0o755); err == nil {
+				if err := os.WriteFile(filepath.Join(dir, rel), data, 0o644); err == nil {
+					b.WriteString(fmt.Sprintf("（第 1 个候选的封面已存盘：%s；要核对可 view_image）\n", rel))
+				}
+			}
 		}
-		data, err := t.cli.FetchThumb(ctx, it.ThumbPath)
-		if err != nil {
-			continue
-		}
-		rel := filepath.Join("out", "hentai", "_search", fmt.Sprintf("thumb_%d.jpg", it.ID))
-		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(rel)), 0o755); err != nil {
-			continue
-		}
-		if err := os.WriteFile(filepath.Join(dir, rel), data, 0o644); err != nil {
-			continue
-		}
-		attachImage(ctx, filepath.Join(dir, rel)) // 缩略图回传给模型"看着挑"
 	}
 
 	b.WriteString("挑一个最相关的，再调一次并带上 id_or_url=<id>")

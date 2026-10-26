@@ -29,6 +29,12 @@ type LLM struct {
 	Thinking    bool
 	ThinkTokens int
 	ActTokens   int
+
+	// CompactionRatio 历史占到窗口的多少就开始压缩（默认 0.40）。
+	// 调大 = 少压缩、记得多、但预填充更慢；调小 = 压得勤、模型更健忘。
+	CompactionRatio float64
+	// ProtectChars 保护区体积预算（字符）：最近这段记忆保持原样，更早的折叠成占位。
+	ProtectChars int
 }
 
 // NewLLM 按 USE_LOCAL 选后端：
