@@ -185,3 +185,35 @@ func TestControlCommandOf(t *testing.T) {
 		}
 	}
 }
+
+// 自检：回调没收到过时要明确指出去后台开通，并给文本命令兜底
+func TestDiagnosisWhenNoCallback(t *testing.T) {
+	b, _ := testBot(t, "oc_diag", 3)
+	out := b.diagnosis("oc_diag")
+	if !strings.Contains(out, "一次都没收到过") {
+		t.Errorf("没收到回调时应该提示：%s", out)
+	}
+	if !strings.Contains(out, "压缩") || !strings.Contains(out, "停止") {
+		t.Errorf("应该给出文本命令兜底：%s", out)
+	}
+	if !strings.Contains(out, "3 条") {
+		t.Errorf("应该报告上下文条数：%s", out)
+	}
+}
+
+// 自检：收到过回调就显示 ✅ 和次数
+func TestDiagnosisWithCallback(t *testing.T) {
+	b, _ := testBot(t, "oc_diag2", 0)
+	b.cardCallbacks.Add(2)
+	out := b.diagnosis("oc_diag2")
+	if !strings.Contains(out, "已收到 2 次") {
+		t.Errorf("应该显示回调次数：%s", out)
+	}
+}
+
+// 自检命令能被解析
+func TestDiagnosisCommand(t *testing.T) {
+	if got := controlCommandOf("自检"); got != "doctor" {
+		t.Errorf("「自检」应该映射到 doctor，实际 %q", got)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
@@ -35,10 +36,13 @@ type Bot struct {
 	locks map[string]*sync.Mutex
 	// cancelers 每个群当前在跑的那次 Run 的取消函数（"停止"按钮用）。
 	// 同一个群串行执行，所以一个群最多一个。
-	cancelers   map[string]context.CancelFunc
-	worktreeMgr *worktree.Manager
-	chatDirs    *chatDirs // 新增：chat_id -> 目录名
-	chatNames   sync.Map  // 新增：进程内缓存群名，避免每轮调用API
+	cancelers map[string]context.CancelFunc
+	// cardCallbacks 收到过多少次卡片回调：用来判断"后台到底开通没开通"。
+	// 0 次 = 点了按钮但事件没送到，多半是控制台没配卡片回调。
+	cardCallbacks atomic.Int64
+	worktreeMgr   *worktree.Manager
+	chatDirs      *chatDirs // 新增：chat_id -> 目录名
+	chatNames     sync.Map  // 新增：进程内缓存群名，避免每轮调用API
 }
 
 // internal/worktree/worktree.go 里加一个判断，或者放在 bot 里

@@ -87,6 +87,7 @@ func (b *Bot) onCardAction(ctx context.Context, event *callback.CardActionTrigge
 			cmd = v
 		}
 	}
+	b.cardCallbacks.Add(1)
 	log.Printf("[Feishu] 卡片动作 chat=%s cmd=%s", chatID, cmd)
 	if chatID == "" {
 		return toast("error", "拿不到会话 ID"), nil
@@ -246,6 +247,8 @@ func controlCommandOf(text string) string {
 		return cmdStop
 	case "面板", "控制台", "控制面板", "按钮", "菜单", "/menu", "menu":
 		return "menu"
+	case "自检", "体检", "状态", "/doctor", "doctor", "/status":
+		return "doctor"
 	}
 	return ""
 }
@@ -258,6 +261,11 @@ func (b *Bot) handleControlText(ctx context.Context, messageID, chatID, text str
 		return false
 	}
 	reporter := NewFeishuReporter(b.client, messageID)
+
+	if cmd == "doctor" {
+		_ = reporter.reply(ctx, b.diagnosis(chatID))
+		return true
+	}
 
 	if cmd == "menu" {
 		if card := controlCardJSON(""); card != "" {
@@ -287,4 +295,36 @@ func (b *Bot) handleControlText(ctx context.Context, messageID, chatID, text str
 		log.Printf("[Feishu] 控制命令回复失败：%v", err)
 	}
 	return true
+}
+
+// diagnosis 自检：一眼看出"卡片能不能用""上下文多大""有没有在跑"。
+// 为什么要有：卡片回调是飞书后台的开关，代码这边看不出来，
+// 用户点按钮没反应时，第一条要排查的就是"回调事件到底有没有到"。
+func (b *Bot) diagnosis(chatID string) string {
+	var sb strings.Builder
+	sb.WriteString("🩺 自检\n")
+
+	n := b.cardCallbacks.Load()
+	if n == 0 {
+		sb.WriteString("卡片回调：❌ 一次都没收到过\n")
+		sb.WriteString("  → 点按钮没反应的话，去飞书后台「事件与回调 → 回调配置」\n")
+		sb.WriteString("     选「长连接」并添加 card.action.trigger\n")
+		sb.WriteString("  → 在此之前用文本命令：压缩 / 清理 / 停止\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("卡片回调：✅ 已收到 %d 次\n", n))
+	}
+
+	if s, ok := b.sessions.Get(chatID); ok {
+		sb.WriteString(fmt.Sprintf("上下文：%d 条 / 约 %d 字符\n", s.Len(), b.eng.SessionChars(s)))
+	} else {
+		sb.WriteString("上下文：这个群还没有历史\n")
+	}
+
+	if b.cancelers[chatID] != nil {
+		sb.WriteString("当前任务：▶ 正在跑（可以发「停止」）\n")
+	} else {
+		sb.WriteString("当前任务：空闲\n")
+	}
+	sb.WriteString(fmt.Sprintf("单次超时：%s（RUN_TIMEOUT_MIN 可调）", runTimeout()))
+	return sb.String()
 }
