@@ -31,6 +31,9 @@ type SentLedger struct {
 	// sources 已经下载过的图片来源（URL 哈希）：同一张图被 CDN 重新编码后字节会变，
 	// 内容 hash 对不上，但"来源还是那个 URL"——这一层防的是"又是同一张图"。
 	sources map[string]sourceEntry
+	// perceptual 图片感知哈希：字节变了但画面一样（换 CDN / 重新压缩）也能认出来。
+	// 用路径链表的场景：模型把同一张图下载成 15.jpg、17.jpg 两个文件，字节不同。
+	perceptual map[string]time.Time
 }
 
 // sourceEntry 一次图片下载记录（路径用于"直接复用已有文件"）
@@ -41,9 +44,10 @@ type sourceEntry struct {
 
 // ledgerFile 落盘格式（v2）：老的纯 map 格式也能读
 type ledgerFile struct {
-	Items     map[string]sentEntry   `json:"items"`
-	Galleries map[string]time.Time   `json:"galleries,omitempty"`
-	Sources   map[string]sourceEntry `json:"sources,omitempty"`
+	Items      map[string]sentEntry   `json:"items"`
+	Galleries  map[string]time.Time   `json:"galleries,omitempty"`
+	Sources    map[string]sourceEntry `json:"sources,omitempty"`
+	Perceptual map[string]time.Time   `json:"perceptual,omitempty"`
 }
 
 // 同一个路径共用一个实例：send 和 fetch_hentai 都要读写这张表，
@@ -79,10 +83,11 @@ type sentEntry struct {
 // NewSentLedger 打开/创建记录表；path 为空表示只在内存里记（测试用）
 func NewSentLedger(path string) *SentLedger {
 	l := &SentLedger{
-		path:      path,
-		items:     make(map[string]sentEntry),
-		galleries: make(map[string]time.Time),
-		sources:   make(map[string]sourceEntry),
+		path:       path,
+		items:      make(map[string]sentEntry),
+		galleries:  make(map[string]time.Time),
+		sources:    make(map[string]sourceEntry),
+		perceptual: make(map[string]time.Time),
 	}
 	if path != "" {
 		l.load()
@@ -111,6 +116,9 @@ func (l *SentLedger) load() {
 		if lf.Sources != nil {
 			l.sources = lf.Sources
 		}
+		if lf.Perceptual != nil {
+			l.perceptual = lf.Perceptual
+		}
 		return
 	}
 	// 兼容 v1：整个文件就是一个 hash -> entry 的 map
@@ -133,9 +141,10 @@ func (l *SentLedger) saveLocked() error {
 		return fmt.Errorf("创建记录表目录失败：%w", err)
 	}
 	data, err := json.MarshalIndent(ledgerFile{
-		Items:     l.items,
-		Galleries: l.galleries,
-		Sources:   l.sources,
+		Items:      l.items,
+		Galleries:  l.galleries,
+		Sources:    l.sources,
+		Perceptual: l.perceptual,
 	}, "", " ")
 	if err != nil {
 		return fmt.Errorf("序列化记录表失败：%w", err)
@@ -280,6 +289,30 @@ func (l *SentLedger) MarkSource(rawURL, relPath string) error {
 		for k, v := range l.sources {
 			if v.At.Before(cut) {
 				delete(l.sources, k)
+			}
+		}
+	}
+	return l.saveLocked()
+}
+
+// SeenPerceptual 画面是否已经发过（同一张图换编码也认得出）
+func (l *SentLedger) SeenPerceptual(hash string) (time.Time, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	at, ok := l.perceptual[hash]
+	return at, ok
+}
+
+// MarkPerceptual 记一条感知哈希（立刻落盘）
+func (l *SentLedger) MarkPerceptual(hash string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.perceptual[hash] = time.Now()
+	if len(l.perceptual) > 2000 {
+		cut := time.Now().AddDate(0, 0, -60)
+		for k, v := range l.perceptual {
+			if v.Before(cut) {
+				delete(l.perceptual, k)
 			}
 		}
 	}

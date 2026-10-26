@@ -193,12 +193,20 @@ func (t *SendTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	if herr != nil {
 		log.Printf("[Send] 计算内容哈希失败（跳过防重）：%v", herr)
 	}
+	// 图片再算一次"感知哈希"：同一张图换 CDN / 重新压缩后字节不同，
+	// 内容 hash 对不上，但画面一样——用户看到的就是"发了两张一样的图"。
+	phash := ""
+	if isImageExt(full) {
+		if h, perr := perceptualHash(full); perr == nil {
+			phash = h
+		}
+	}
 
 	// 自动路由：图片优先走 image 通道（内联预览，体验最好）；
 	// 没有 ImageSender 的环境（比如只挂了 FileSender 的外壳）落到 file 通道兜底
 	if isImageExt(full) && st.Size() <= imageMaxBytes {
 		if sender := imageSenderFrom(ctx); sender != nil {
-			if dup, ok := t.duplicate(hash, in.Force); ok {
+			if dup, ok := t.duplicateImage(hash, phash, in.Force); ok {
 				return dup, nil
 			}
 			if err := sender.SendImage(ctx, full); err != nil {
@@ -209,6 +217,9 @@ func (t *SendTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 				if err := t.ledger.Record(hash, sentEntry{Path: rel, Name: fileName, Size: st.Size()}); err != nil {
 					log.Printf("[Send] 记录发送失败（不影响本次发送）：%v", err)
 				}
+				if phash != "" {
+					_ = t.ledger.MarkPerceptual(phash)
+				}
 			}
 			return fmt.Sprintf("图片 %s 已发送给用户（图片消息，用户可直接预览）", in.Path), nil
 		}
@@ -218,7 +229,7 @@ func (t *SendTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	if sender == nil {
 		return "", fmt.Errorf("当前环境不支持发送文件（只有飞书等外壳支持）")
 	}
-	if dup, ok := t.duplicate(hash, in.Force); ok {
+	if dup, ok := t.duplicateImage(hash, phash, in.Force); ok {
 		return dup, nil
 	}
 	fileType := inferFileType(full)
@@ -229,6 +240,9 @@ func (t *SendTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		rel, _ := filepath.Rel(dir, full)
 		if err := t.ledger.Record(hash, sentEntry{Path: rel, Name: fileName, Size: st.Size()}); err != nil {
 			log.Printf("[Send] 记录发送失败（不影响本次发送）：%v", err)
+		}
+		if phash != "" {
+			_ = t.ledger.MarkPerceptual(phash)
 		}
 	}
 	why := "格式不是图片"
@@ -255,6 +269,21 @@ func (t *SendTool) duplicate(hash string, force bool) (string, bool) {
 		"不要重复发送：同一份内容发两次用户会看到两条一样的消息。"+
 		"如果用户明确要求重发，再带上 force=true。",
 		prev.Path, hash, prev.At.Format("15:04:05")), true
+}
+
+// duplicateImage 内容或画面命中都算重复（图片尤其要查画面）
+func (t *SendTool) duplicateImage(hash, phash string, force bool) (string, bool) {
+	if force || t.ledger == nil {
+		return "", false
+	}
+	if phash != "" {
+		if at, ok := t.ledger.SeenPerceptual(phash); ok {
+			return fmt.Sprintf("这张图之前已经发过了（画面相同，%s，感知哈希=%s）。"+
+				"同一张图发两次用户会看到两条一样的消息；内容相同就不要再发。"+
+				"用户明确要求重发时再带 force=true。", at.Format("15:04"), phash), true
+		}
+	}
+	return t.duplicate(hash, false)
 }
 
 // maxFileNameRunes 展示名长度上限：够放标题+分片信息，又不至于被飞书截断
