@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"log"
+
 	"little-robot/internal/schema"
 )
 
@@ -74,10 +76,15 @@ var _ BaseTool = &SendTool{}
 
 type SendTool struct {
 	workDir string
+	// ledger 已发送内容登记表：同一份内容（按 hash）不会重复发给用户
+	ledger *SentLedger
 }
 
 func NewSendTool(workDir string) *SendTool {
-	return &SendTool{workDir: workDir}
+	return &SendTool{
+		workDir: workDir,
+		ledger:  NewSentLedger(filepath.Join(workDir, ".claw", "sent.json")),
+	}
 }
 
 func (t *SendTool) Name() string { return "send" }
@@ -95,6 +102,10 @@ func (t *SendTool) Definition() schema.ToolDefinition {
 				"path": map[string]interface{}{
 					"type":        "string",
 					"description": "相对工作区的文件路径，例如 out/chart.png、out/hentai/12345/12345.zip",
+				},
+				"force": map[string]interface{}{
+					"type":        "boolean",
+					"description": "用户明确要求重发同一个文件时才设 true；默认 false，同一份内容发过会自动跳过",
 				},
 				"name": map[string]interface{}{
 					"type":        "string",
@@ -137,8 +148,9 @@ func inferFileType(absPath string) string {
 
 func (t *SendTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var in struct {
-		Path string `json:"path"`
-		Name string `json:"name"`
+		Path  string `json:"path"`
+		Name  string `json:"name"`
+		Force bool   `json:"force"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return "", fmt.Errorf("参数解析失败：%w", err)
@@ -169,12 +181,29 @@ func (t *SendTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	// name="…PART.1）1/2" → 没有 .pdf 手机认不出，斜杠被客户端当路径切开只剩 "2"）
 	fileName := sanitizeFileName(in.Name, full)
 
+	// 防重复发送：同一份内容（按 hash）发过就不再发。
+	// 真实体验问题："说抓几个，结果传的都是同一张"——模型试探性重试时
+	// 会连着调 send 发同一个封面，用户端看到一串重复消息。
+	hash, herr := fileHash(full)
+	if herr != nil {
+		log.Printf("[Send] 计算内容哈希失败（跳过防重）：%v", herr)
+	}
+
 	// 自动路由：图片优先走 image 通道（内联预览，体验最好）；
 	// 没有 ImageSender 的环境（比如只挂了 FileSender 的外壳）落到 file 通道兜底
 	if isImageExt(full) && st.Size() <= imageMaxBytes {
 		if sender := imageSenderFrom(ctx); sender != nil {
+			if dup, ok := t.duplicate(hash, in.Force); ok {
+				return dup, nil
+			}
 			if err := sender.SendImage(ctx, full); err != nil {
 				return "", fmt.Errorf("发送图片失败：%w", err)
+			}
+			if herr == nil {
+				rel, _ := filepath.Rel(dir, full)
+				if err := t.ledger.Record(hash, sentEntry{Path: rel, Name: fileName, Size: st.Size()}); err != nil {
+					log.Printf("[Send] 记录发送失败（不影响本次发送）：%v", err)
+				}
 			}
 			return fmt.Sprintf("图片 %s 已发送给用户（图片消息，用户可直接预览）", in.Path), nil
 		}
@@ -184,9 +213,18 @@ func (t *SendTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	if sender == nil {
 		return "", fmt.Errorf("当前环境不支持发送文件（只有飞书等外壳支持）")
 	}
+	if dup, ok := t.duplicate(hash, in.Force); ok {
+		return dup, nil
+	}
 	fileType := inferFileType(full)
 	if err := sender.SendFile(ctx, full, fileName, fileType); err != nil {
 		return "", fmt.Errorf("发送文件失败：%w", err)
+	}
+	if herr == nil {
+		rel, _ := filepath.Rel(dir, full)
+		if err := t.ledger.Record(hash, sentEntry{Path: rel, Name: fileName, Size: st.Size()}); err != nil {
+			log.Printf("[Send] 记录发送失败（不影响本次发送）：%v", err)
+		}
 	}
 	why := "格式不是图片"
 	switch {
@@ -196,6 +234,22 @@ func (t *SendTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		why = "环境没有图片通道，降级为文件消息"
 	}
 	return fmt.Sprintf("文件 %s（%s，%d 字节）已发送给用户（%s）", in.Path, fileType, st.Size(), why), nil
+}
+
+// duplicate 内容发过就返回"别重复发"的说明；force 或计算失败时放行。
+// 放在"确认有发送通道"之后：没通道时应该报通道错误，而不是被去重悄悄吞掉。
+func (t *SendTool) duplicate(hash string, force bool) (string, bool) {
+	if force || hash == "" || t.ledger == nil {
+		return "", false
+	}
+	prev, ok := t.ledger.Seen(hash)
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprintf("这个文件已经发过了（%s，内容 hash=%s，%s）。"+
+		"不要重复发送：同一份内容发两次用户会看到两条一样的消息。"+
+		"如果用户明确要求重发，再带上 force=true。",
+		prev.Path, hash, prev.At.Format("15:04:05")), true
 }
 
 // maxFileNameRunes 展示名长度上限：够放标题+分片信息，又不至于被飞书截断

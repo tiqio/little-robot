@@ -212,6 +212,23 @@ func (c *Compactor) compact(msgs []schema.Message) []schema.Message {
 			}
 		}
 
+		// 老的长 user 消息：之前**完全没处理**（只处理了工具结果和 assistant），
+		// 于是"（系统注入）这是工具刚拿到的图片…"这类长文本永远留着，
+		// 实测导致 19 万字符压完还剩 17 万。这里同样折叠成占位符。
+		if m.Role == schema.RoleUser && m.ToolCallID == "" && !inWorkingMemory && origLen > 200 {
+			m.Content = fmt.Sprintf("...[早期用户消息已省略，原长%d字符]...", origLen)
+		}
+
+		// 老的工具调用参数也要压：write_file/edit_file 的参数里可能带着整段文件内容，
+		// 这类消息的 Content 是空的，只压 Content 等于没压。
+		if m.Role == schema.RoleAssistant && !inWorkingMemory {
+			for k := range m.ToolCalls {
+				if len(m.ToolCalls[k].Arguments) > 200 {
+					m.ToolCalls[k].Arguments = []byte(`{"_omitted":"早期调用参数已省略"}`)
+				}
+			}
+		}
+
 		// 老的推理文本：折叠，带ToolCalls的消息Content可能为空，因此这里仅仅考虑到推理太长的情况
 		if m.Role == schema.RoleAssistant && m.Content != "" && !inWorkingMemory && len(m.Content) > 200 {
 			m.Content = "...[早期推理已折叠]..."

@@ -70,6 +70,8 @@ func TestSendRouting(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			// 每个子用例独立：清掉上一个用例留下的发送记录，避免内容相同时被去重拦住
+			_ = os.Remove(filepath.Join(dir, ".claw", "sent.json"))
 			s := &fakeSender{}
 			out, err := NewSendTool(dir).Execute(sendCtx(t, s), json.RawMessage(c.args))
 			if err != nil {
@@ -179,7 +181,8 @@ func TestSendMissingSender(t *testing.T) {
 		t.Errorf("只有 FileSender 时图片应该走 file 通道兜底：%v", err)
 	}
 
-	// 什么都没有
+	// 什么都没有（先清掉发送记录，确保走到"没有通道"这个分支）
+	_ = os.Remove(filepath.Join(dir, ".claw", "sent.json"))
 	if _, err := NewSendTool(dir).Execute(context.Background(),
 		json.RawMessage(`{"path":"out/photo.jpg"}`)); err == nil {
 		t.Error("两个 sender 都没有应该报错")
@@ -304,5 +307,53 @@ func TestSanitizeFileNameTooShort(t *testing.T) {
 	got := sanitizeFileName("2", "/w/out/hentai/681824/681824-part2.pdf")
 	if got != "681824-part2.pdf" {
 		t.Errorf("过短名字应该兜底成磁盘名，实际 %q", got)
+	}
+}
+
+// 同一份内容发第二次要被拦住；force=true 放行
+func TestSendDedupesSameContent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "out", "cover.jpg")
+	if err := os.WriteFile(p, []byte("cover-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fs := &fakeSender{}
+	ctx := WithFileSender(context.Background(), fs)
+	tool := NewSendTool(dir)
+
+	// 第一次：发出去
+	if _, err := tool.Execute(ctx, json.RawMessage(`{"path":"out/cover.jpg"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if fs.filePath == "" {
+		t.Fatal("第一次应该真的发出去了")
+	}
+
+	// 第二次：拦住
+	fs2 := &fakeSender{}
+	ctx2 := WithFileSender(context.Background(), fs2)
+	msg, err := tool.Execute(ctx2, json.RawMessage(`{"path":"out/cover.jpg"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fs2.filePath != "" {
+		t.Error("同一份内容不该再发一次")
+	}
+	if !strings.Contains(msg, "已经发过") {
+		t.Errorf("应该告诉模型已经发过：%q", msg)
+	}
+
+	// force：放行
+	fs3 := &fakeSender{}
+	ctx3 := WithFileSender(context.Background(), fs3)
+	if _, err := tool.Execute(ctx3, json.RawMessage(`{"path":"out/cover.jpg","force":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if fs3.filePath == "" {
+		t.Error("force=true 应该放行")
 	}
 }

@@ -307,6 +307,8 @@ func controlCommandOf(text string) string {
 		return "menu"
 	case "自检", "体检", "状态", "/doctor", "doctor", "/status":
 		return "doctor"
+	case "上下文", "上下文大小", "上下文多大了", "占用", "/ctx", "ctx", "/context":
+		return "context"
 	}
 	return ""
 }
@@ -322,6 +324,11 @@ func (b *Bot) handleControlText(ctx context.Context, messageID, chatID, text str
 
 	if cmd == "doctor" {
 		_ = reporter.reply(ctx, b.diagnosis(chatID))
+		return true
+	}
+
+	if cmd == "context" {
+		_ = reporter.reply(ctx, b.contextReport(chatID))
 		return true
 	}
 
@@ -390,6 +397,7 @@ func (b *Bot) diagnosis(chatID string) string {
 // panelWarnRatio 上下文占到窗口的这个比例就弹控制台：
 // 自动压缩在 65%（contextFillRatio）开始介入，60% 提前一点点提醒，
 // 让用户还有"主动点压缩"的余地，而不是等它自己压。
+// panelWarnRatio 占压缩线的比例：到 60% 就提醒（100% 会触发自动压缩）
 const panelWarnRatio = 0.60
 
 // panelHint 决定这次运行结束后要不要弹控制台，以及卡片上写什么。
@@ -401,7 +409,13 @@ func panelHint(ratio float64) (hint string, want bool) {
 	if ratio < panelWarnRatio {
 		return "", false
 	}
-	return fmt.Sprintf("**上下文快满了**：已占窗口约 %d%%。\n"+
+	// 100% = 压缩线。超过 100% 说明"还没轮到压就已经超了"，如实说，别显示 300% 这种没意义的数
+	if ratio >= 1 {
+		return fmt.Sprintf("**上下文已超过压缩线**（100%% 触发自动压缩，现在是 %d%%）。\n"+
+			"下一条消息会自动压缩；想立刻瘦身点 **🧹 压缩上下文**，想从头开始点 **🗑 清理上下文**。",
+			int(ratio*100)), true
+	}
+	return fmt.Sprintf("**上下文接近压缩线**：已占 %d%%（到 100%% 自动压缩）。\n"+
 		"现在点 **🧹 压缩上下文** 可以立刻瘦身（保留记忆，只折叠内容）；\n"+
 		"或者点 **🗑 清理上下文** 从头开始。", int(ratio*100)), true
 }
@@ -493,4 +507,32 @@ func humanBytes(n int64) string {
 		return fmt.Sprintf("%.0fKB", float64(n)/(1<<10))
 	}
 	return fmt.Sprintf("%dB", n)
+}
+
+// contextReport 精确的上下文数字：用户想“看一眼现在多大”时发「上下文」。
+// 走这条分支不经过模型，秒回，也不消耗 token。
+func (b *Bot) contextReport(chatID string) string {
+	s, ok := b.sessions.Get(chatID)
+	if !ok {
+		return "📊 上下文：这个群还没有历史（0 条）"
+	}
+	st := b.eng.Stats(s)
+	var sb strings.Builder
+	sb.WriteString("📊 上下文（精确值）\n")
+	sb.WriteString(fmt.Sprintf("消息：%d 条\n", st.Messages))
+	if st.Chars > 0 {
+		sb.WriteString(fmt.Sprintf("字符：%d（≈%d token）\n", st.Chars, st.Tokens))
+	}
+	sb.WriteString(fmt.Sprintf("压缩线：%d 字符（占用 %d%%）\n", st.Threshold, int(st.Ratio*100)))
+	sb.WriteString(fmt.Sprintf("模型窗口：%d token\n", st.Window))
+	// 一句话结论，别让用户自己换算
+	switch {
+	case st.Ratio >= 1:
+		sb.WriteString("状态：已超过压缩线，下一条消息会自动压缩")
+	case st.Ratio >= panelWarnRatio:
+		sb.WriteString("状态：接近压缩线，可以点「压缩」主动瘦身")
+	default:
+		sb.WriteString("状态：宽裕")
+	}
+	return sb.String()
 }

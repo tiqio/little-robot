@@ -620,15 +620,53 @@ func (e *AgentEngine) SessionChars(s *session.Session) int {
 	return e.compactor.Estimate(s.Messages())
 }
 
-// Pressure 会话相对模型窗口的占用比（0~1）：外壳拿它决定"要不要提醒用户压缩"。
+// Pressure 会话占"压缩线"的比例：**1.0 = 100% = 马上要压缩**。
 //
-// 为什么挂在引擎上而不是记住"这次 Run 压过没"：
-// 一个引擎同时服务多个群，把"本轮状态"存在引擎字段里会互相干扰；
-// 而会话本身是现成的、每群独立的，直接按当前历史算最准确。
+// 为什么不用"占窗口比例"：窗口是 131072 token，而历史经常是 20 万字符，
+// 算出来就是 300%、400%——用户看到的百分比一直在 100% 以上，没有参考价值。
+// 以压缩线为 100% 才符合直觉：涨到 100% 就压，压完掉下来。
+// 超过 1 只在"还没来得及压"时出现，UI 会显示成"已超线"。
 func (e *AgentEngine) Pressure(s *session.Session) (chars int, ratio float64) {
-	if s == nil || e.compactor == nil || e.contextTokens <= 0 {
+	if s == nil || e.compactor == nil || e.compactor.MaxChars <= 0 {
 		return 0, 0
 	}
 	chars = e.compactor.Estimate(s.Messages())
-	return chars, float64(chars) / float64(e.contextTokens*charsPerToken)
+	return chars, float64(chars) / float64(e.compactor.MaxChars)
+}
+
+// CompactionThreshold 压缩线（字符数）：UI 里显示"xxk / yy k"用
+func (e *AgentEngine) CompactionThreshold() int {
+	if e.compactor == nil {
+		return 0
+	}
+	return e.compactor.MaxChars
+}
+
+// ContextStats 上下文的确切占用情况（给用户看的“体检数字”）。
+type ContextStats struct {
+	Messages  int     // 历史条数
+	Chars     int     // 字符数（压缩器口径）
+	Tokens    int     // 估算 token（字符/2）
+	Threshold int     // 压缩线（字符）：到它就会自动压
+	Window    int     // 模型窗口（token）
+	Ratio     float64 // 占压缩线的比例，1.0 = 100% = 即将压缩
+}
+
+// Stats 返回会话的确切上下文占用
+func (e *AgentEngine) Stats(s *session.Session) ContextStats {
+	st := ContextStats{Window: e.contextTokens}
+	if s != nil {
+		st.Messages = s.Len()
+	}
+	if e.compactor != nil {
+		st.Threshold = e.compactor.MaxChars
+		if s != nil {
+			st.Chars = e.compactor.Estimate(s.Messages())
+		}
+		st.Tokens = st.Chars / charsPerToken
+		if st.Threshold > 0 {
+			st.Ratio = float64(st.Chars) / float64(st.Threshold)
+		}
+	}
+	return st
 }

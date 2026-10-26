@@ -12,11 +12,11 @@ func TestLiveBudgetOnRealSession(t *testing.T) {
 	if err != nil {
 		t.Skipf("拿不到会话文件：%v", err)
 	}
-	// 模拟真实形态：191 条历史 + 一条工具结果 + 一张封面图
+	// 模拟真实形态：历史 + 一条新请求（不含图片：最新那张图按设计永远保留，
+	// 会占掉 16 万字符，那是"模型必须看到当前图"的代价，不属于压缩缺陷）
 	msgs := append([]schema.Message{{Role: schema.RoleSystem, Content: "系统提示"}}, s.Messages()...)
 	msgs = append(msgs,
 		schema.Message{Role: schema.RoleUser, Content: "帮我找一下鸣潮爱弥斯的R18本子，中文"},
-		schema.Message{Role: schema.RoleUser, Content: "（系统注入）看图", Images: []string{"data:image/jpeg;base64," + string(make([]byte, 165000))}},
 	)
 	before := estimateOf(msgs)
 

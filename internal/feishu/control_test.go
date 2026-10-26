@@ -331,3 +331,45 @@ func TestHumanBytes(t *testing.T) {
 		}
 	}
 }
+
+// 百分比以压缩线为 100%：不会出现 200%/400% 这种没意义的数
+func TestPressureIsRelativeToThreshold(t *testing.T) {
+	b, s := testBot(t, "oc_pct", 0)
+	b.eng.SetCompaction(10000, 0) // 窗口 10000 → 压缩线 8000 字符
+	s.Append(schema.Message{Role: schema.RoleUser, Content: strings.Repeat("x", 4000)})
+
+	chars, ratio := b.eng.Pressure(s)
+	if chars != 4000 {
+		t.Errorf("字符数应该是 4000，实际 %d", chars)
+	}
+	if ratio < 0.49 || ratio > 0.51 {
+		t.Errorf("4000 字符 / 8000 压缩线 应该是 50%%，实际 %.2f", ratio)
+	}
+
+	// 到 2 倍压缩线：显示 200%，而不是把"占窗口"算成几千 %
+	s.Append(schema.Message{Role: schema.RoleUser, Content: strings.Repeat("y", 12000)})
+	if _, ratio2 := b.eng.Pressure(s); ratio2 < 1.9 || ratio2 > 2.1 {
+		t.Errorf("16000/8000 应该约 200%%，实际 %.2f", ratio2)
+	}
+}
+
+// 上下文数字：条数、字符、压缩线、窗口都要给全
+func TestContextReport(t *testing.T) {
+	b, s := testBot(t, "oc_report", 3)
+	b.eng.SetCompaction(131072, 0.40) // 压缩线 104857
+	rep := b.contextReport("oc_report")
+	for _, want := range []string{"消息：3 条", "字符：", "压缩线：104857", "模型窗口：131072", "token"} {
+		if !strings.Contains(rep, want) {
+			t.Errorf("报告里应该包含 %q：\n%s", want, rep)
+		}
+	}
+	_ = s
+}
+
+// 没有历史的群也要能回答
+func TestContextReportEmpty(t *testing.T) {
+	b, _ := testBot(t, "oc_report_empty", 0)
+	if got := b.contextReport("oc_nobody"); !strings.Contains(got, "还没有历史") {
+		t.Errorf("空会话应该直说：%q", got)
+	}
+}
