@@ -29,6 +29,20 @@ func (c *Compactor) Compact(msgs []schema.Message) []schema.Message {
 	if c.estimate(msgs) < c.MaxChars {
 		return msgs // 判断当前msg是否需要被压缩，没有阈值就原样返回
 	}
+	return c.compact(msgs)
+}
+
+// ManualCompact 用户主动点"压缩上下文"：不看阈值，保护区也收紧到最近 8 条。
+// 自动压缩是"别撞窗口"，手动压缩是"我现在就想省点 token"，后者应该更狠。
+func (c *Compactor) ManualCompact(msgs []schema.Message) []schema.Message {
+	manual := &Compactor{MaxChars: 0, RetainLast: 8}
+	return manual.compact(msgs)
+}
+
+// Estimate 让外部（按钮回执、日志）能报告"压缩前多大"
+func (c *Compactor) Estimate(msgs []schema.Message) int { return c.estimate(msgs) }
+
+func (c *Compactor) compact(msgs []schema.Message) []schema.Message {
 
 	// 先建立索引，后续打印的时候可以处理
 	// 工具名只存在于assistant的ToolCalls里，工具结果消息本身就只有ToolCallID

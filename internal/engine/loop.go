@@ -513,3 +513,26 @@ func previewArgs(raw []byte, max int) string {
 	}
 	return string(r[:max]) + fmt.Sprintf("…（共%d字节）", len(s))
 }
+
+// CompactSession 手动压缩：把会话历史换成压缩后的版本，返回压缩前后字符数。
+// 飞书"压缩上下文"按钮走这里——外壳不该知道 compactor 长什么样。
+func (e *AgentEngine) CompactSession(s *session.Session) (before, after int) {
+	if s == nil || e.compactor == nil {
+		return 0, 0
+	}
+	msgs := s.Messages()
+	before = e.compactor.Estimate(msgs)
+	out := e.compactor.ManualCompact(msgs)
+	after = e.compactor.Estimate(out)
+	s.Replace(out)
+	log.Printf("[Engine] 手动压缩会话 %s：%d -> %d 字符", s.ID, before, after)
+	return before, after
+}
+
+// SessionChars 会话历史当前多大（字符数近似），按钮回执用
+func (e *AgentEngine) SessionChars(s *session.Session) int {
+	if s == nil || e.compactor == nil {
+		return 0
+	}
+	return e.compactor.Estimate(s.Messages())
+}

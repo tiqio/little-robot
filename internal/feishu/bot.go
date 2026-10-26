@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,9 +30,12 @@ type Bot struct {
 	client    *lark.Client
 	sessions  *session.Manager
 
-	mu          sync.Mutex
-	seen        map[string]struct{}
-	locks       map[string]*sync.Mutex
+	mu    sync.Mutex
+	seen  map[string]struct{}
+	locks map[string]*sync.Mutex
+	// cancelers 每个群当前在跑的那次 Run 的取消函数（"停止"按钮用）。
+	// 同一个群串行执行，所以一个群最多一个。
+	cancelers   map[string]context.CancelFunc
 	worktreeMgr *worktree.Manager
 	chatDirs    *chatDirs // 新增：chat_id -> 目录名
 	chatNames   sync.Map  // 新增：进程内缓存群名，避免每轮调用API
@@ -85,6 +89,7 @@ func NewBot(appID, appSecret string, eng *engine.AgentEngine) *Bot {
 		sessions:  session.NewManager(), // 默认不落盘，兼容旧行为
 		seen:      make(map[string]struct{}),
 		locks:     make(map[string]*sync.Mutex),
+		cancelers: make(map[string]context.CancelFunc),
 	}
 
 	b.chatDirs = newChatDirs(eng.WorkDir)
@@ -110,7 +115,9 @@ func (b *Bot) UseSessions(m *session.Manager) {
 }
 
 func (b *Bot) Start(ctx context.Context) error {
-	handler := dispatcher.NewEventDispatcher("", "").OnP2MessageReceiveV1(b.onMessage)
+	handler := dispatcher.NewEventDispatcher("", "").
+		OnP2MessageReceiveV1(b.onMessage).
+		OnP2CardActionTrigger(b.onCardAction) // 控制台卡片的三个按钮
 	cli := larkws.NewClient(b.appID, b.appSecret, larkws.WithEventHandler(handler))
 	log.Println("[Feishu] 长连接启动中...")
 	return cli.Start(ctx)
@@ -143,6 +150,17 @@ func (b *Bot) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) e
 
 	reporter := NewFeishuReporter(b.client, messageID)
 
+	// "面板/控制台/按钮"：手机上调出控制卡片（不跑模型，秒回）
+	if isControlCommand(text) {
+		if card := controlCardJSON(""); card != "" {
+			if err := reporter.replyCard(context.Background(), card); err != nil {
+				log.Printf("[Feishu] 发送控制台卡片失败：%v", err)
+				_ = reporter.reply(context.Background(), "发卡片失败："+err.Error())
+			}
+		}
+		return nil
+	}
+
 	// 同一个绘画串行，避免两个任务同时修改同一个工作区
 	lock := b.lockFor(chatID)
 	if !lock.TryLock() {
@@ -153,8 +171,20 @@ func (b *Bot) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) e
 	// 立刻返回，任务放后台；用Background，不继承handler的ctx
 	go func() {
 		defer lock.Unlock()
-		runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		// 本地 27B + 多轮工具 + 下载/合成 PDF，10 分钟经常不够（真实事故：
+		// context deadline exceeded）。提到 20 分钟，可用 RUN_TIMEOUT_MIN 覆盖。
+		runCtx, cancel := context.WithTimeout(context.Background(), runTimeout())
 		defer cancel()
+
+		// 登记取消函数：控制台"停止"按钮靠它中断本次 Run
+		b.mu.Lock()
+		b.cancelers[chatID] = cancel
+		b.mu.Unlock()
+		defer func() {
+			b.mu.Lock()
+			delete(b.cancelers, chatID)
+			b.mu.Unlock()
+		}()
 
 		// 把本次运行的 sender 放进 ctx：send 工具靠它知道"回复哪条消息"
 		runCtx = tools.WithImageSender(runCtx, reporter)
@@ -188,6 +218,12 @@ func (b *Bot) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) e
 			reporter.NotifyError(context.Background(), err, time.Since(start))
 		} else {
 			reporter.NotifyDone(context.Background(), time.Since(start))
+		}
+		// 任务边界之后跟一张控制台：手机上点按钮比打字方便
+		if card := controlCardJSON(""); card != "" {
+			if err := reporter.replyCard(context.Background(), card); err != nil {
+				log.Printf("[Feishu] 发送控制台卡片失败：%v", err)
+			}
 		}
 
 		// 跑完就落盘：不存的话重启就等于全员失忆
@@ -276,4 +312,25 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// runTimeout 单次任务的时间上限：默认 20 分钟，RUN_TIMEOUT_MIN 可覆盖。
+// 之前写死 10 分钟，本地 27B 跑"抓本子 + 多轮工具 + 合成 PDF"会撞线，
+// 用户看到的就是"⚠️ 任务中断：context deadline exceeded"。
+func runTimeout() time.Duration {
+	if v := os.Getenv("RUN_TIMEOUT_MIN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Minute
+		}
+	}
+	return 20 * time.Minute
+}
+
+// isControlCommand 判断是不是"叫出控制台"的命令
+func isControlCommand(text string) bool {
+	switch strings.TrimSpace(text) {
+	case "面板", "控制台", "按钮", "菜单", "menu", "/menu", "控制面板":
+		return true
+	}
+	return false
 }

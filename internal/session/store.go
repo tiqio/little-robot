@@ -28,8 +28,9 @@ type fileFormat struct {
 	History   []schema.Message `json:"history"`
 }
 
-// safeName 把会话id变成安全的文件名，防止id里出现/或..
-func safeName(id string) string {
+// SafeName 把会话id变成安全的文件名，防止id里出现/或..
+// 导出是因为外壳（飞书卡片按钮要删会话文件）也得用同一套规则。
+func SafeName(id string) string {
 	r := strings.NewReplacer("/", "_", "\\", "_", "..", "_", " ", "_") // 统一把特殊字符转换成_
 	return r.Replace(id)
 }
@@ -76,7 +77,7 @@ func (s *Session) Save(dir string) (string, error) {
 		return "", fmt.Errorf("序列化会话失败：%w", err)
 	}
 
-	path := filepath.Join(dir, safeName(s.ID)+".json")
+	path := filepath.Join(dir, SafeName(s.ID)+".json")
 
 	// 先写临时文件再rename:rename再同一个文件系统中是原子的，中途崩掉只会留下.tmp，不会把好文件写坏
 	tmp := path + ".tmp"

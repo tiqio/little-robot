@@ -99,7 +99,7 @@ func (m *Manager) GetOrCreateAt(id, workDir, storeDir string) *Session {
 		if dir == "" {
 			continue
 		}
-		path := filepath.Join(dir, safeName(id)+".json")
+		path := filepath.Join(dir, SafeName(id)+".json")
 		if s, err := Load(path); err == nil {
 			s.WorkDir = workDir // 工作区以本次启动为准，历史保留
 			s.storeDir = storeDir
@@ -131,4 +131,29 @@ func (m *Manager) Save(s *Session) (string, error) {
 		return "", nil
 	}
 	return s.Save(dir)
+}
+
+// Replace 用新历史整体替换（手动压缩/清理用）。调用方负责串行，
+// 这里加锁只保护"别读到半截历史"。
+func (s *Session) Replace(msgs []schema.Message) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history = msgs
+	s.UpdatedAt = time.Now()
+}
+
+// Reset 清空历史（"清理上下文"按钮）：会话本身还在，只是从零开始。
+func (s *Session) Reset() {
+	s.Replace(nil)
+}
+
+// StoreDir 返回本会话的落盘目录（清理时要连磁盘上的旧历史一起删）
+func (s *Session) StoreDir() string { return s.storeDir }
+
+// Get 只查不建：卡片按钮要操作"当前会话"，没有就是没有
+func (m *Manager) Get(id string) (*Session, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	return s, ok
 }
