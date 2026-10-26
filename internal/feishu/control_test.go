@@ -217,3 +217,52 @@ func TestDiagnosisCommand(t *testing.T) {
 		t.Errorf("「自检」应该映射到 doctor，实际 %q", got)
 	}
 }
+
+// 控制台只在上下文快满时弹：正常成功不打扰
+func TestPanelHint(t *testing.T) {
+	cases := []struct {
+		ratio     float64
+		wantPanel bool
+	}{
+		{0.0, false},
+		{0.3, false},
+		{0.59, false},
+		{0.60, true},
+		{0.75, true},
+		{1.2, true}, // 已经超了也要弹
+	}
+	for _, c := range cases {
+		hint, want := panelHint(c.ratio)
+		if want != c.wantPanel {
+			t.Errorf("ratio=%.2f 期望弹=%v，实际=%v", c.ratio, c.wantPanel, want)
+		}
+		if want && hint == "" {
+			t.Errorf("ratio=%.2f 要弹就必须有文案", c.ratio)
+		}
+		if !want && hint != "" {
+			t.Errorf("ratio=%.2f 不该弹却给了文案：%q", c.ratio, hint)
+		}
+	}
+	// 文案里要有具体占比，用户才知道有多满
+	hint, _ := panelHint(0.73)
+	if !strings.Contains(hint, "73%") {
+		t.Errorf("提示应该带占比：%q", hint)
+	}
+}
+
+// 引擎的 Pressure：空会话是 0，塞满历史接近 1
+func TestEnginePressure(t *testing.T) {
+	b, s := testBot(t, "oc_pressure", 0)
+	_, r0 := b.eng.Pressure(s)
+	if r0 != 0 {
+		t.Errorf("空会话占用应该是 0，实际 %.2f", r0)
+	}
+	b.eng.SetContextTokens(10000) // 小窗口，便于把比例顶上去
+	for i := 0; i < 10; i++ {
+		s.Append(schema.Message{Role: schema.RoleUser, ToolCallID: "c", Content: strings.Repeat("x", 2000)})
+	}
+	_, r1 := b.eng.Pressure(s)
+	if r1 <= r0 || r1 < 0.5 {
+		t.Errorf("塞入 20K 字符 / 10K token 窗口，占用应该很高，实际 %.2f", r1)
+	}
+}

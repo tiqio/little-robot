@@ -328,3 +328,22 @@ func (b *Bot) diagnosis(chatID string) string {
 	sb.WriteString(fmt.Sprintf("单次超时：%s（RUN_TIMEOUT_MIN 可调）", runTimeout()))
 	return sb.String()
 }
+
+// panelWarnRatio 上下文占到窗口的这个比例就弹控制台：
+// 自动压缩在 65%（contextFillRatio）开始介入，60% 提前一点点提醒，
+// 让用户还有"主动点压缩"的余地，而不是等它自己压。
+const panelWarnRatio = 0.60
+
+// panelHint 决定这次运行结束后要不要弹控制台，以及卡片上写什么。
+//   - 上下文快满：弹，提示占比
+//   - 其余情况：不弹（成功就只是成功，别每轮都塞一张卡片打扰用户）
+//
+// 任务超限失败由调用方直接传"已超限"的文案，走 want=true。
+func panelHint(ratio float64) (hint string, want bool) {
+	if ratio < panelWarnRatio {
+		return "", false
+	}
+	return fmt.Sprintf("**上下文快满了**：已占窗口约 %d%%。\n"+
+		"现在点 **🧹 压缩上下文** 可以立刻瘦身（保留记忆，只折叠内容）；\n"+
+		"或者点 **🗑 清理上下文** 从头开始。", int(ratio*100)), true
+}

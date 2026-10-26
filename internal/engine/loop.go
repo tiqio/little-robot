@@ -567,3 +567,16 @@ func (e *AgentEngine) SessionChars(s *session.Session) int {
 	}
 	return e.compactor.Estimate(s.Messages())
 }
+
+// Pressure 会话相对模型窗口的占用比（0~1）：外壳拿它决定"要不要提醒用户压缩"。
+//
+// 为什么挂在引擎上而不是记住"这次 Run 压过没"：
+// 一个引擎同时服务多个群，把"本轮状态"存在引擎字段里会互相干扰；
+// 而会话本身是现成的、每群独立的，直接按当前历史算最准确。
+func (e *AgentEngine) Pressure(s *session.Session) (chars int, ratio float64) {
+	if s == nil || e.compactor == nil || e.contextTokens <= 0 {
+		return 0, 0
+	}
+	chars = e.compactor.Estimate(s.Messages())
+	return chars, float64(chars) / float64(e.contextTokens*charsPerToken)
+}

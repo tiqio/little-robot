@@ -226,11 +226,25 @@ func (b *Bot) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) e
 		} else {
 			reporter.NotifyDone(context.Background(), time.Since(start))
 		}
-		// 任务边界之后跟一张控制台：手机上点按钮比打字方便
-		if card := controlCardJSON(hint); card != "" {
-			if err := reporter.replyCard(context.Background(), card); err != nil {
-				log.Printf("[Feishu] 发送控制台卡片失败：%v", err)
+		// 控制台只在"上下文快满 / 已经超限"时弹，正常成功不打扰。
+		// 想随时调出来就发「面板」。
+		_, ratio := b.eng.Pressure(sess)
+		pressureHint, want := panelHint(ratio)
+		if pressureHint != "" {
+			hint = pressureHint
+		}
+		if hint != "" {
+			want = true // 超限失败一定带 hint，必须弹
+		}
+		if want {
+			log.Printf("[Feishu] 上下文占用 %.0f%%，弹控制台", ratio*100)
+			if card := controlCardJSON(hint); card != "" {
+				if err := reporter.replyCard(context.Background(), card); err != nil {
+					log.Printf("[Feishu] 发送控制台卡片失败：%v", err)
+				}
 			}
+		} else {
+			log.Printf("[Feishu] 上下文占用 %.0f%%，还没到提醒线，不弹控制台", ratio*100)
 		}
 
 		// 跑完就落盘：不存的话重启就等于全员失忆
