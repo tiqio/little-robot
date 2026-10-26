@@ -16,14 +16,42 @@ import (
 type Compactor struct {
 	MaxChars   int // 字符数阈值（token的廉价近似）：历史总字符超过它，才开始压，现在设置的值是20000，约等于1万token，留余量给下一轮输出，注意中文约0.6~1token/字，英文0.25token/字，要的是趋势不是精度
 	RetainLast int // 最近多少条字符保持原样，最近N条消息原样保留，一条都不栋，现在默认为8，模型一轮一般是思考+调用+结果三条，8条~最近两三轮
+	// ClipHead/ClipTail 保护区内单条消息保留的头/尾字符数。
+	// 之前写死 10000+10000：一条 108KB 的工具输出压完还有 60KB，
+	// 30 条加起来 1.8MB，本地模型预填充要十几分钟——等于没压。
+	ClipHead int
+	ClipTail int
 }
 
 func NewCompactor(maxChars, retainLast int) *Compactor {
 	return &Compactor{
 		MaxChars:   maxChars,
 		RetainLast: retainLast,
+		ClipHead:   defaultClipHead,
+		ClipTail:   defaultClipTail,
 	}
 }
+
+// 自动压缩的保护区裁剪力度：8K 字符 ≈ 4K token，够模型看懂"这条大概是什么"
+const (
+	defaultClipHead = 4000
+	defaultClipTail = 4000
+)
+
+// 用户点"压缩"：比自动更狠一点（保护区 8 条、每条留 2500+2500）
+const (
+	manualRetainLast = 8
+	manualClipHead   = 2500
+	manualClipTail   = 2500
+)
+
+// 上下文超限自救：不留情面，只保住最近 3 条、每条 1200+1200。
+// 这时候的目标是"能发出请求"而不是"信息完整"——毕竟结果是失败还是继续，就差这一下。
+const (
+	squeezeRetainLast = 3
+	squeezeClipHead   = 1200
+	squeezeClipTail   = 1200
+)
 
 func (c *Compactor) Compact(msgs []schema.Message) []schema.Message {
 	if c.estimate(msgs) < c.MaxChars {
@@ -35,8 +63,23 @@ func (c *Compactor) Compact(msgs []schema.Message) []schema.Message {
 // ManualCompact 用户主动点"压缩上下文"：不看阈值，保护区也收紧到最近 8 条。
 // 自动压缩是"别撞窗口"，手动压缩是"我现在就想省点 token"，后者应该更狠。
 func (c *Compactor) ManualCompact(msgs []schema.Message) []schema.Message {
-	manual := &Compactor{MaxChars: 0, RetainLast: 8}
-	return manual.compact(msgs)
+	return (&Compactor{
+		MaxChars:   0,
+		RetainLast: manualRetainLast,
+		ClipHead:   manualClipHead,
+		ClipTail:   manualClipTail,
+	}).compact(msgs)
+}
+
+// Squeeze 上下文超限时的"急救压缩"：能删的都删、能截的都截。
+// 和 ManualCompact 的区别是它还允许丢细节——先让请求发得出去，再谈记忆。
+func (c *Compactor) Squeeze(msgs []schema.Message) []schema.Message {
+	return (&Compactor{
+		MaxChars:   0,
+		RetainLast: squeezeRetainLast,
+		ClipHead:   squeezeClipHead,
+		ClipTail:   squeezeClipTail,
+	}).compact(msgs)
 }
 
 // Estimate 让外部（按钮回执、日志）能报告"压缩前多大"
@@ -83,12 +126,10 @@ func (c *Compactor) compact(msgs []schema.Message) []schema.Message {
 				if origLen > 200 {
 					m.Content = fmt.Sprintf("...[早期工具输出已清理，原长%d字节]...", len(m.Content))
 				}
-			} else if origLen > 1000 {
-				// 保护区内太长：保留头500 + 尾500
-				// 头部通常是命令回显，尾部通常是报错信息，中间是可以牺牲的
-				// m.Content = m.Content[:500] + fmt.Sprintf("\n\n...[中间%d字节已截断]...\n\n", len(m.Content)-1000) + m.Content[len(m.Content)-500:]
-				// m.Content = clipMiddle(m.Content, 500, 500)
-				m.Content = clipMiddle(m.Content, 10000, 10000)
+			} else if origLen > c.ClipHead+c.ClipTail {
+				// 保护区内太长：保留头尾，中间可以牺牲
+				// 头部通常是命令回显，尾部通常是报错信息
+				m.Content = clipMiddle(m.Content, c.ClipHead, c.ClipTail)
 			}
 		}
 

@@ -18,6 +18,31 @@ import (
 
 var _ LLMProvider = &OpenAIProvider{}
 
+// ErrContextOverflow 请求比模型的上下文窗口还长。
+// 单独识别是因为它可恢复：把历史狠狠压一遍再发，任务通常还能继续，
+// 而不是让整轮对话死在一个"窗口不够"上（真实文案见 looksLikeContextOverflow）。
+var ErrContextOverflow = errors.New("请求超过模型上下文窗口")
+
+// looksLikeContextOverflow 认各家"窗口不够"的说法。
+// llama.cpp: request (300052 tokens) exceeds the available context size (262144 tokens)
+// OpenAI/DeepSeek: maximum context length is N tokens
+func looksLikeContextOverflow(body string) bool {
+	b := strings.ToLower(body)
+	for _, kw := range []string{
+		"exceed_context_size_error",
+		"exceeds the available context size",
+		"maximum context length",
+		"context length exceeded",
+		"too many tokens",
+		"input is too long",
+	} {
+		if strings.Contains(b, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 // ErrImageRejected 后端因为"图片格式/内容不认"拒绝了整个请求（通常是 HTTP 400）。
 // 单独拿出来是因为它可恢复：把图片剥掉重发一次，任务还能继续，
 // 而不是一张图把整轮对话跑死（真实事故：小 webp 让 llama.cpp 回 400）。
@@ -262,6 +287,9 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 
 	if resp.StatusCode != http.StatusOK {
 		body := truncate(string(respRaw), 500)
+		if looksLikeContextOverflow(body) {
+			return nil, fmt.Errorf("%s 说请求超出上下文窗口：%w（响应：%s）", p.cfg.Name, ErrContextOverflow, body)
+		}
 		if resp.StatusCode == http.StatusBadRequest && looksLikeImageRejection(body) {
 			// 文案带上 provider 名：之前这里硬编码 DeepSeek，
 			// 本地 llama.cpp 的 400 也被说成"DeepSeek 返回"，排查时被带偏

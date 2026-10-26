@@ -1,6 +1,7 @@
 ### 文档
 
 - [飞书机器人接入指南（配置流程 + 踩坑 + Playwright 辅助）](./docs/feishu-setup.md)
+- [飞书控制台：压缩 / 清理 / 停止（按钮 + 文本命令 + 自检）](./docs/feishu-control.md)
 - [工作目录隔离（RunState / worktree / 群名目录）](./docs/workdir-isolation.md)
 
 ### something

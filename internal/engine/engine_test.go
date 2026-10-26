@@ -250,3 +250,54 @@ func TestImageRejectedFallsBack(t *testing.T) {
 		t.Errorf("重试成功后应该把答案发给用户，实际 %q", got)
 	}
 }
+
+// overflowProvider 第一次报"上下文超限"，压缩后（历史变短）就成功
+type overflowProvider struct {
+	calls int
+	sizes []int
+}
+
+func (f *overflowProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+	n := 0
+	for _, m := range msgs {
+		n += len(m.Content)
+	}
+	f.calls++
+	f.sizes = append(f.sizes, n)
+	if f.calls == 1 {
+		return nil, fmt.Errorf("lmstudio 说请求超出上下文窗口：%w", provider.ErrContextOverflow)
+	}
+	return &schema.Message{Role: schema.RoleAssistant, Content: "压完就答出来了", FinishReason: "stop"}, nil
+}
+
+// 上下文超限：自动压缩并重试一次，用户仍然拿到答案
+func TestContextOverflowRecovers(t *testing.T) {
+	dir := t.TempDir()
+	s := session.New("test-overflow", dir)
+	for i := 0; i < 12; i++ {
+		s.Append(schema.Message{
+			Role:       schema.RoleUser,
+			ToolCallID: "call_x",
+			Content:    strings.Repeat("很早以前的工具输出", 500),
+		})
+	}
+
+	p := &overflowProvider{}
+	eng := NewAgentEngine(p, tools.NewRegistry(), dir, false)
+
+	var got string
+	rep := &spyReporter{onMessage: func(text string) { got = text }}
+	if err := eng.Run(context.Background(), s, "继续", rep); err != nil {
+		t.Fatalf("超限应该自救而不是报错：%v", err)
+	}
+
+	if p.calls != 2 {
+		t.Fatalf("应该 2 次调用（超限 + 压缩后重试），实际 %d", p.calls)
+	}
+	if p.sizes[1] >= p.sizes[0] {
+		t.Errorf("重试时的历史应该更短：%d -> %d", p.sizes[0], p.sizes[1])
+	}
+	if !strings.Contains(got, "压完就答出来了") {
+		t.Errorf("重试成功后应该把答案发给用户，实际 %q", got)
+	}
+}

@@ -55,7 +55,26 @@ func (e *AgentEngine) callModel(ctx context.Context, history []schema.Message, t
 	}
 
 	resp, err := e.provider.Generate(ctx, history, toolDefs)
-	if err == nil || !errors.Is(err, provider.ErrImageRejected) {
+	if err == nil {
+		return resp, history, noImages, err
+	}
+
+	// 上下文超限：把历史狠压一遍（连图一起剥）再发一次。
+	// 自动压缩按 65% 阈值压、保护区还留 36 条，撞线时往往压得不够狠。
+	if errors.Is(err, provider.ErrContextOverflow) {
+		squeezed, _ := stripImages(history)
+		squeezed = e.compactor.Squeeze(squeezed) // 急救：能截的都截，先让请求发得出去
+		before := e.compactor.Estimate(history)
+		after := e.compactor.Estimate(squeezed)
+		log.Printf("[Engine] 上下文超限，压缩后重试：%d -> %d 字符", before, after)
+		if after < before {
+			resp2, err2 := e.provider.Generate(ctx, squeezed, toolDefs)
+			return resp2, squeezed, true, err2
+		}
+		return nil, history, noImages, err
+	}
+
+	if !errors.Is(err, provider.ErrImageRejected) {
 		return resp, history, noImages, err
 	}
 
@@ -109,9 +128,11 @@ type AgentEngine struct {
 	// 0 = 不覆盖，用 provider 的默认 max_tokens。两段分开，思考吃不到行动的份。
 	thinkTokens int
 	actTokens   int
-	composer    *prompt.Composer
-	compactor   *session.Compactor
-	reminder    *Reminder
+	// contextTokens 模型窗口（SetContextTokens 时记下来），用来做"贴窗口"的硬保护
+	contextTokens int
+	composer      *prompt.Composer
+	compactor     *session.Compactor
+	reminder      *Reminder
 }
 
 // 构造函数
@@ -138,6 +159,7 @@ func (e *AgentEngine) SetContextTokens(contextTokens int) {
 		keep = e.compactor.RetainLast
 	}
 	e.compactor = session.NewCompactor(defaultMaxChars(contextTokens), keep)
+	e.contextTokens = contextTokens
 	log.Printf("[Engine] 上下文窗口 %d tokens，压缩阈值 %d 字符", contextTokens, e.compactor.MaxChars)
 }
 
@@ -234,6 +256,15 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 
 		// 发送请求前压缩：只换内容，不删除消息
 		history = e.compactor.Compact(history) // 位置很关键：必须在Generate之前，s.Append之后，压的是“发出去的快照”，不是会话本身
+
+		// 硬保护：估算已经贴到窗口 90%，说明常规压缩不够，直接手动狠压。
+		// 与其让后端回 400 再补救，不如发之前就压好（少一次失败、少一次等待）
+		if e.contextTokens > 0 && e.compactor.Estimate(history)/charsPerToken > e.contextTokens*9/10 {
+			before := e.compactor.Estimate(history)
+			history = e.compactor.Squeeze(history) // 贴线时用急救档，别留 21 万 token 让本地模型慢慢预填充
+			log.Printf("[Engine] 上下文逼近窗口（%d 字符 ≈ %d token / 窗口 %d），强制压缩到 %d 字符",
+				before, before/charsPerToken, e.contextTokens, e.compactor.Estimate(history))
+		}
 
 		var thinking string
 

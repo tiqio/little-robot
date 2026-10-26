@@ -3,7 +3,9 @@ package feishu
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"little-robot/internal/engine"
+	"little-robot/internal/provider"
 	"little-robot/internal/runstate"
 	"little-robot/internal/session"
 	"little-robot/internal/tools"
@@ -210,16 +212,22 @@ func (b *Bot) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) e
 		// 任务边界（ch35）：开始标记先发出，用户手机上立刻知道"收到了，在跑了"
 		reporter.NotifyStart(runCtx)
 		start := time.Now()
+		hint := "" // 卡片上额外的一句引导
 		if err := b.eng.Run(runCtx, sess, text, reporter); err != nil {
 			log.Printf("[Feishu] 引擎出错：%v", err)
-			// 用 Background 而不是 runCtx：runCtx 刚好超时（10分钟）时，
+			// 用 Background 而不是 runCtx：runCtx 刚好超时（20分钟）时，
 			// 用 runCtx 发"任务中断"这句话本身也会一起死
 			reporter.NotifyError(context.Background(), err, time.Since(start))
+			if errors.Is(err, provider.ErrContextOverflow) {
+				// 引擎已经自动压过一次还不行：告诉用户"点压缩"比让他重发更有效
+				hint = "**这次是上下文超限**（引擎已自动压缩并重试过一次）。\n" +
+					"点下面的 **🧹 压缩上下文** 再重发一次；或者点 **🗑 清理上下文** 从头开始。"
+			}
 		} else {
 			reporter.NotifyDone(context.Background(), time.Since(start))
 		}
 		// 任务边界之后跟一张控制台：手机上点按钮比打字方便
-		if card := controlCardJSON(""); card != "" {
+		if card := controlCardJSON(hint); card != "" {
 			if err := reporter.replyCard(context.Background(), card); err != nil {
 				log.Printf("[Feishu] 发送控制台卡片失败：%v", err)
 			}

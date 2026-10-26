@@ -207,3 +207,39 @@ func TestNormal400NotImageRejection(t *testing.T) {
 		t.Errorf("错误信息应该带 provider 名，实际：%v", err)
 	}
 }
+
+// 上下文超限要能被识别（llama.cpp / OpenAI 文案都认），引擎才能压缩后重试
+func TestContextOverflowDetected(t *testing.T) {
+	bodies := []string{
+		`{"error":"Engine protocol predict request returned 400: {\"error\":{\"code\":400,\"message\":\"request (300052 tokens) exceeds the available context size (262144 tokens), try increasing it\",\"type\":\"exceed_context_size_error\"}}"}`,
+		`{"error":"This model's maximum context length is 128000 tokens"}`,
+	}
+	for _, body := range bodies {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(body))
+		}))
+		p := NewOpenAI(Config{Name: "lmstudio", BaseURL: srv.URL, Model: "m"})
+		_, err := p.Generate(context.Background(), nil, nil)
+		srv.Close()
+
+		if !errors.Is(err, ErrContextOverflow) {
+			t.Errorf("应该识别成上下文超限：%v", err)
+		}
+	}
+}
+
+// 超限不能被误判成"拒图"（否则会去剥图而不是压上下文）
+func TestOverflowNotImageRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"exceeds the available context size"}`))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAI(Config{Name: "lmstudio", BaseURL: srv.URL, Model: "m"})
+	_, err := p.Generate(context.Background(), nil, nil)
+	if errors.Is(err, ErrImageRejected) {
+		t.Errorf("超限不该被当成拒图：%v", err)
+	}
+}
