@@ -15,10 +15,11 @@ func TestSearchVariants(t *testing.T) {
 			// 真实事故里的那个词
 			in: "aysa wuthering_waves chinese",
 			want: []string{"aysa wuthering_waves chinese", "aysa wuthering_waves", "aysa",
-				"aysa wuthering waves chinese", "wuthering waves", "chinese"},
+				"aysa wuthering waves chinese", "wuthering waves"},
 		},
 		{in: "aemeath", want: []string{"aemeath"}},
-		{in: "中文 汉化 爱弥斯", want: []string{"中文 汉化 爱弥斯", "爱弥斯", "中文", "汉化"}},
+		// 中文/汉化 属于泛词，不单独降级（否则会命中一堆无关结果）
+		{in: "中文 汉化 爱弥斯", want: []string{"中文 汉化 爱弥斯", "爱弥斯"}},
 		{in: "   ", want: nil},
 	}
 	for _, c := range cases {

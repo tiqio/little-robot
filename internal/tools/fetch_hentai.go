@@ -338,11 +338,17 @@ func searchVariants(query string) []string {
 	// 逐个"词"单独试（长的优先）：角色名写错的时候，作品名往往是对的。
 	// 注意保留下划线词组的整体性：wuthering_waves 要变成 "wuthering waves"
 	// 而不是拆成两个无义词（真实数据：wuthering_waves=0 条，wuthering waves=25 条）。
+	//
+	// 泛词必须排除：单独搜 "chinese" 会命中一大票无关本子，
+	// 还顺带挂上封面图，把上下文直接撑爆（线上就是这样涨到 55 万字符的）。
 	tokens := strings.Fields(q)
 	sort.SliceStable(tokens, func(i, j int) bool { return len(tokens[i]) > len(tokens[j]) })
 	for i, tok := range tokens {
 		if i >= 3 {
 			break
+		}
+		if drop[strings.ToLower(tok)] || len([]rune(tok)) < 3 {
+			continue
 		}
 		add(strings.ReplaceAll(tok, "_", " "))
 	}
@@ -376,7 +382,11 @@ func (t *FetchHentaiTool) latestMode(ctx context.Context, dir string, page int) 
 	return t.listMode(ctx, dir, fmt.Sprintf("nhentai 最新列表 第 %d 页（新→旧）", page), items, total)
 }
 
-// listMode 渲染一批候选 + 把前 3 个封面下载到工作区回传给模型"看着挑"
+// listMode 渲染一批候选 + 把**第 1 个**封面回传给模型"看着挑"。
+//
+// 为什么只挂 1 张：缩略图的 data URL 一张就是十几万字符（≈3~4 万 token），
+// 挂 3 张等于每轮往历史里塞 30 万字符。实测就是这样把上下文顶到 55 万、
+// 预填充要走十几分钟的。想看别的封面，模型可以再调一次。
 func (t *FetchHentaiTool) listMode(ctx context.Context, dir, heading string, items []sources.GallerySummary, total int) (string, error) {
 	var b strings.Builder
 	n := len(items)
@@ -395,9 +405,9 @@ func (t *FetchHentaiTool) listMode(ctx context.Context, dir, heading string, ite
 		b.WriteString(fmt.Sprintf("%d. id=%d 《%s》 %d页 ♥%d\n", i+1, it.ID, title, it.NumPages, it.NumFavorites))
 	}
 
-	// 前 3 个封面下载到工作区并回传给模型，让它"看着封面挑"
+	// 只挂第一个封面：够模型判断"这批对不对味"，又不至于把窗口吃光
 	for i, it := range items {
-		if i >= 3 {
+		if i >= 1 {
 			break
 		}
 		data, err := t.cli.FetchThumb(ctx, it.ThumbPath)

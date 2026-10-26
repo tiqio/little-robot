@@ -97,6 +97,28 @@ func (c *Compactor) compact(msgs []schema.Message) []schema.Message {
 		}
 	}
 
+	// 图片是"体积炸弹"：一张缩略图的 data URL 十几万字符。
+	// 不管在不在保护区，都只保留最近 keepRecentImages 条带图消息——
+	// 模型只需要看"当前这张"，历史图片可以随时用 view_image 重新看。
+	// 真实事故：每轮注入 1 张封面图，36 条保护区全留着，上下文涨到 55 万字符。
+	const keepRecentImages = 2
+	var imageIdxs []int
+	for i := range msgs {
+		if len(msgs[i].Images) > 0 {
+			imageIdxs = append(imageIdxs, i)
+		}
+	}
+	keepImage := map[int]bool{}
+	if len(imageIdxs) > keepRecentImages {
+		for _, i := range imageIdxs[len(imageIdxs)-keepRecentImages:] {
+			keepImage[i] = true
+		}
+	} else {
+		for _, i := range imageIdxs {
+			keepImage[i] = true
+		}
+	}
+
 	// 保护区的七点：索引 >= protectFrom的消息不动内容
 	protectFrom := len(msgs) - c.RetainLast
 	if protectFrom < 0 {
@@ -134,10 +156,10 @@ func (c *Compactor) compact(msgs []schema.Message) []schema.Message {
 			}
 		}
 
-		// 老的图片消息（ch34/S3）：data URL 是 base64，一张几百 KB，
+		// 老的图片消息（ch34/S3 + ch46）：data URL 是 base64，一张几百 KB，
 		// 留在历史里每轮都重新喂给模型。原图还在磁盘上，view_image 能找回来，
 		// 所以历史里留一句"看过图"的占位就够
-		if m.Role == schema.RoleUser && len(m.Images) > 0 && !inWorkingMemory {
+		if m.Role == schema.RoleUser && len(m.Images) > 0 && (!inWorkingMemory || !keepImage[i]) {
 			n := len(m.Images)
 			m.Images = nil
 			note := ImageNote(n)

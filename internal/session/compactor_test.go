@@ -52,3 +52,33 @@ func TestCompactorEstimateCountsImages(t *testing.T) {
 		t.Errorf("带图的历史应该估出更大的体积：%d vs %d", c.estimate(withImg), c.estimate(plain))
 	}
 }
+
+// 保护区里也只保留最近 2 条带图消息：图片是最贵的上下文消耗
+func TestCompactorKeepsOnlyRecentImages(t *testing.T) {
+	c := NewCompactor(2000, 36) // 保护区覆盖全部消息
+	img := func() []string { return []string{"data:image/jpeg;base64," + strings.Repeat("A", 3000)} }
+
+	var msgs []schema.Message
+	msgs = append(msgs, schema.Message{Role: schema.RoleUser, Content: "用户问", Images: img()})
+	for i := 0; i < 3; i++ {
+		msgs = append(msgs, schema.Message{Role: schema.RoleUser, Content: "看这张", Images: img()})
+	}
+
+	out := c.Compact(msgs)
+	kept := 0
+	for _, m := range out {
+		if len(m.Images) > 0 {
+			kept++
+		}
+	}
+	if kept != 2 {
+		t.Errorf("应该只保留最近 2 条带图消息，实际 %d 条", kept)
+	}
+	// 被剥掉的那几条要留占位说明
+	if !strings.Contains(out[0].Content, "查看过 1 张图片") {
+		t.Errorf("老图应该留占位：%q", out[0].Content)
+	}
+	if len(out[len(out)-1].Images) == 0 {
+		t.Error("最新一条的图必须保留（模型要看当前这张）")
+	}
+}
