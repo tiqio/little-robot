@@ -22,14 +22,21 @@ type Compactor struct {
 	// 30 条加起来 1.8MB，本地模型预填充要十几分钟——等于没压。
 	ClipHead int
 	ClipTail int
+
+	// ProtectChars 保护区**体积**上限（字符）。
+	// 只按"最近 N 条"保护是不够的：36 条 × 每条 5000 字符 = 18 万字符，
+	// 结果一条都不压，等于没压（实测：177780 → 176516，只掉 1264）。
+	// 从末尾往前累计，超过这个预算就停止保护，更早的一律折叠。
+	ProtectChars int
 }
 
 func NewCompactor(maxChars, retainLast int) *Compactor {
 	return &Compactor{
-		MaxChars:   maxChars,
-		RetainLast: retainLast,
-		ClipHead:   defaultClipHead,
-		ClipTail:   defaultClipTail,
+		MaxChars:     maxChars,
+		RetainLast:   retainLast,
+		ClipHead:     defaultClipHead,
+		ClipTail:     defaultClipTail,
+		ProtectChars: defaultProtectChars,
 	}
 }
 
@@ -38,6 +45,10 @@ const (
 	defaultClipHead = 4000
 	defaultClipTail = 4000
 )
+
+// 保护区体积预算：只保最近 2 万字符（约 1 万 token）。
+// 本地模型预填充只有 65~130 token/s，prompt 每多 1 万 token 就多 1~2 分钟等待。
+const defaultProtectChars = 20000
 
 // 用户点"压缩"：比自动更狠一点（保护区 8 条、每条留 2500+2500）
 const (
@@ -65,10 +76,11 @@ func (c *Compactor) Compact(msgs []schema.Message) []schema.Message {
 // 自动压缩是"别撞窗口"，手动压缩是"我现在就想省点 token"，后者应该更狠。
 func (c *Compactor) ManualCompact(msgs []schema.Message) []schema.Message {
 	return (&Compactor{
-		MaxChars:   0,
-		RetainLast: manualRetainLast,
-		ClipHead:   manualClipHead,
-		ClipTail:   manualClipTail,
+		MaxChars:     0,
+		RetainLast:   manualRetainLast,
+		ClipHead:     manualClipHead,
+		ClipTail:     manualClipTail,
+		ProtectChars: manualClipHead * 2 * 2,
 	}).compact(msgs)
 }
 
@@ -76,10 +88,11 @@ func (c *Compactor) ManualCompact(msgs []schema.Message) []schema.Message {
 // 和 ManualCompact 的区别是它还允许丢细节——先让请求发得出去，再谈记忆。
 func (c *Compactor) Squeeze(msgs []schema.Message) []schema.Message {
 	return (&Compactor{
-		MaxChars:   0,
-		RetainLast: squeezeRetainLast,
-		ClipHead:   squeezeClipHead,
-		ClipTail:   squeezeClipTail,
+		MaxChars:     0,
+		RetainLast:   squeezeRetainLast,
+		ClipHead:     squeezeClipHead,
+		ClipTail:     squeezeClipTail,
+		ProtectChars: squeezeClipHead * 2 * 2,
 	}).compact(msgs)
 }
 
@@ -123,6 +136,22 @@ func (c *Compactor) compact(msgs []schema.Message) []schema.Message {
 	protectFrom := len(msgs) - c.RetainLast
 	if protectFrom < 0 {
 		protectFrom = 0
+	}
+	// 体积约束：从末尾往前累计，超过预算就不再保护（更早的折叠成占位符）。
+	// 否则"最近 36 条"在小窗口 + 大工具结果下等于"全部保护"。
+	if c.ProtectChars > 0 {
+		acc := 0
+		cut := 0 // 0 = 没超预算，保持原保护范围
+		for i := len(msgs) - 1; i >= 0; i-- {
+			acc += msgSize(msgs[i])
+			if acc > c.ProtectChars {
+				cut = i + 1
+				break
+			}
+		}
+		if cut > protectFrom {
+			protectFrom = cut
+		}
 	}
 
 	out := make([]schema.Message, len(msgs))
@@ -315,6 +344,18 @@ func StripImages(msgs []schema.Message) []schema.Message {
 		}
 	}
 	return out
+}
+
+// msgSize 单条消息的体积（和 estimate 同口径）
+func msgSize(m schema.Message) int {
+	n := len(m.Content)
+	for _, tc := range m.ToolCalls {
+		n += len(tc.Name) + len(tc.Arguments)
+	}
+	for _, img := range m.Images {
+		n += len(img)
+	}
+	return n
 }
 
 func estimateOf(msgs []schema.Message) int {

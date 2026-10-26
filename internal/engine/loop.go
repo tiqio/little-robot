@@ -140,9 +140,15 @@ type AgentEngine struct {
 // 中文约 1 字/token，英文约 4 字符/token，取 2 留余量（宁可早压，也别等报超窗）。
 const charsPerToken = 2
 
-// contextFillRatio 只用窗口的 65%：剩下 35% 留给思考段输出（2048）+ 工具结果 + 下一轮。
-// 本地窗口小（32K~128K），宁可早压一点，也别等 prompt 撞墙。
-const contextFillRatio = 0.65
+// contextFillRatio 历史占到窗口的这个比例就开始压缩。
+// 从 0.65 降到 0.15 的原因：本地模型**预填充只有 65~130 token/s**，
+// prompt 大小直接等于等待时长——
+//
+//	8K token ≈ 1~2 分钟；25K ≈ 4 分钟；100K ≈ 20 分钟。
+//
+// 65% 意味着要等十几分钟才"开始压"，用户看到的就是"卡住不动"。
+// 15% 让 prompt 稳定在 2 万 token 以内，响应时间可控。
+const contextFillRatio = 0.15
 
 func defaultMaxChars(contextTokens int) int {
 	if contextTokens <= 0 {
@@ -257,9 +263,9 @@ func (e *AgentEngine) Run(ctx context.Context, s *session.Session, userPrompt st
 		// 发送请求前压缩：只换内容，不删除消息
 		history = e.compactor.Compact(history) // 位置很关键：必须在Generate之前，s.Append之后，压的是“发出去的快照”，不是会话本身
 
-		// 硬保护：估算已经贴到窗口 90%，说明常规压缩不够，直接手动狠压。
+		// 硬保护：估算已经超过 prompt 预算，说明常规压缩不够，直接按预算狠压。
 		// 与其让后端回 400 再补救，不如发之前就压好（少一次失败、少一次等待）
-		if e.contextTokens > 0 && e.compactor.Estimate(history)/charsPerToken > e.contextTokens*9/10 {
+		if e.contextTokens > 0 && e.compactor.Estimate(history)/charsPerToken > e.contextTokens*2/10 {
 			before := e.compactor.Estimate(history)
 			// 预算 = 窗口的 10%（字符 ≈ token×2）：13 万 token 的窗口压到 2.6 万字符，
 			// 本地 65 tok/s 的预填充约 3.5 分钟，还在可接受范围。
