@@ -80,3 +80,47 @@ func TestFileHashSameContent(t *testing.T) {
 		t.Errorf("同样内容应该同 hash：%s vs %s", ha, hb)
 	}
 }
+
+// 本子 id 要单独记（内容 hash 挡不住"同一本重新生成 PDF"）
+func TestGalleryLedger(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".claw", "sent.json")
+
+	l := sharedLedger(path)
+	if _, ok := l.SeenGallery("677912"); ok {
+		t.Fatal("空表不该说拉过")
+	}
+	if err := l.MarkGallery("677912"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 重启后还记得（新路径 → 新实例，但读同一个文件）
+	other := NewSentLedger(path)
+	if at, ok := other.SeenGallery("677912"); !ok || at.IsZero() {
+		t.Error("重启后应该还记得这个本子拉过")
+	}
+}
+
+// 同一个路径必须共用实例，否则 send 和 fetch_hentai 会互相覆盖写
+func TestSharedLedgerSingleton(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".claw", "sent.json")
+	a := sharedLedger(path)
+	b := sharedLedger(path)
+	if a != b {
+		t.Error("同一路径应该返回同一个实例")
+	}
+}
+
+// 老的 v1 格式（纯 hash map）要能读，不能因为升级丢表
+func TestLedgerBackwardCompatible(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sent.json")
+	old := `{"abc123":{"path":"out/a.jpg","size":10,"at":"2026-10-26T12:00:00+08:00","sent":true}}`
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := NewSentLedger(path)
+	if _, ok := l.Seen("abc123"); !ok {
+		t.Error("v1 格式的记录应该还能读到")
+	}
+}

@@ -83,8 +83,13 @@ type SendTool struct {
 func NewSendTool(workDir string) *SendTool {
 	return &SendTool{
 		workDir: workDir,
-		ledger:  NewSentLedger(filepath.Join(workDir, ".claw", "sent.json")),
+		ledger:  sharedLedger(filepath.Join(workDir, ".claw", "sent.json")),
 	}
+}
+
+// newSendToolWith 用指定的记录表构造（单测要隔离；生产走 NewSendTool 的单例）
+func newSendToolWith(workDir string, ledger *SentLedger) *SendTool {
+	return &SendTool{workDir: workDir, ledger: ledger}
 }
 
 func (t *SendTool) Name() string { return "send" }

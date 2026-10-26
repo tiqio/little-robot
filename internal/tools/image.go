@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 
+	"log"
+
 	"little-robot/internal/netutil"
 	"little-robot/internal/schema"
 )
@@ -61,6 +63,8 @@ var imageHosts = []string{
 var _ BaseTool = &ImageTool{}
 
 type ImageTool struct {
+	// ledger 图片来源记录：同一张图（按 URL）不会反复下载、反复发
+	ledger    *SentLedger
 	workDir   string
 	pexelsKey string
 	hosts     []string
@@ -69,7 +73,12 @@ type ImageTool struct {
 func NewImageTool(workDir, pexelsKey string, extraHosts ...string) *ImageTool {
 	hosts := append([]string{}, imageHosts...)
 	hosts = append(hosts, extraHosts...)
-	return &ImageTool{workDir: workDir, pexelsKey: pexelsKey, hosts: hosts}
+	return &ImageTool{
+		workDir:   workDir,
+		pexelsKey: pexelsKey,
+		hosts:     hosts,
+		ledger:    sharedLedger(filepath.Join(workDir, ".claw", "sent.json")),
+	}
 }
 
 func (t *ImageTool) Name() string { return "fetch_image" }
@@ -258,6 +267,18 @@ func (t *ImageTool) download(ctx context.Context, rawURL, relPath, full, source 
 		return "", fmt.Errorf("域名 %q 不在白名单内", u.Hostname())
 	}
 
+	// 同一个来源下载过：直接复用已有文件，省一次请求，也避免"又是同一张图"
+	if t.ledger != nil {
+		if prevRel, at, seen := t.ledger.SeenSource(u.String()); seen {
+			prevFull := filepath.Join(effectiveWorkDir(ctx, t.workDir), prevRel)
+			if st, statErr := os.Stat(prevFull); statErr == nil && st.Size() > 0 {
+				return fmt.Sprintf("这张图之前已经下载过（%s，来源相同）：%s（%.0fKB）。\n"+
+					"直接发送这个文件即可，不要重复下载；用户明确要别的图就换个关键词。",
+					at.Format("01-02 15:04"), prevRel, float64(st.Size())/1024), nil
+			}
+		}
+	}
+
 	data, ctype, err := netutil.Fetch(ctx, u.String(), imageMaxBytes)
 	if err != nil {
 		return "", err
@@ -274,6 +295,12 @@ func (t *ImageTool) download(ctx context.Context, rawURL, relPath, full, source 
 	}
 	if err := os.WriteFile(full, data, 0o644); err != nil {
 		return "", fmt.Errorf("保存图片失败：%w", err)
+	}
+
+	if t.ledger != nil {
+		if merr := t.ledger.MarkSource(u.String(), relPath); merr != nil {
+			log.Printf("[Image] 记录图片来源失败（不影响本次）：%v", merr)
+		}
 	}
 
 	// 把图片塞进 carrier，engine 会用它作为一条 user 消息回传给模型（挂载失败不挡下载成功）

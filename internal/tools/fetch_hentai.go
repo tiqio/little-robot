@@ -40,6 +40,10 @@ var _ BaseTool = &FetchHentaiTool{}
 type FetchHentaiTool struct {
 	workDir string
 	cli     *sources.Nhentai
+	// ledger 记录"哪些本子已经拉过"（和 send 共用同一个 .claw/sent.json）。
+	// 用户说"再来一个"时，模型看不到历史里发过什么（上下文被压缩过），
+	// 于是经常把同一个 id 又抓一遍——实测 677912 在 12:43 和 12:55 被抓了两次。
+	ledger *SentLedger
 
 	// resolveCache 名字解析结果缓存：key 是归一化后的输入。
 	// 不加缓存的话，模型连续重试同一个错词会反复打 nhentai（限流 10 次/分钟）。
@@ -67,7 +71,11 @@ func (t *FetchHentaiTool) cacheResolve(query string, names []string, note string
 }
 
 func NewFetchHentaiTool(workDir string, cli *sources.Nhentai) *FetchHentaiTool {
-	return &FetchHentaiTool{workDir: workDir, cli: cli}
+	return &FetchHentaiTool{
+		workDir: workDir,
+		cli:     cli,
+		ledger:  sharedLedger(filepath.Join(workDir, ".claw", "sent.json")),
+	}
 }
 
 func (t *FetchHentaiTool) Name() string { return "fetch_hentai" }
@@ -85,6 +93,7 @@ A. id_or_url：本子数字或链接（12345 / 123-abc / https://nhentai.net/g/1
    抓回封面 + 整本，封面会附在返回里，先看一眼是不是用户要的那本。
 B. query：搜索模式（"sonohara"、"artist:xxx language:english"、"tag:\"big breasts\" pages:>10"）。
    返回前 5 个候选，挑一个再用 id_or_url 调一次。
+   候选里带「已拉过」标记的别再选（用户说"再来一个/新的"时尤其注意）。
    候选不含图片（省上下文）：要核对封面就 view_image(out/hentai/_search/thumb_<id>.jpg)。
 C. page：最新本子列表的第 N 页（对应官网 https://nhentai.net/?page=N，第 1 页 = 最新）。
    用户说"看看今天/最近有什么新本子"就用它，page 不填就是第 1 页。
@@ -160,6 +169,8 @@ func (t *FetchHentaiTool) Execute(ctx context.Context, args json.RawMessage) (st
 	if err != nil {
 		return "", err
 	}
+	repeatWarn := repeatGalleryWarning(t.ledger, id)
+
 	g, err := t.cli.Gallery(ctx, id)
 	if err != nil {
 		return "", err
@@ -192,7 +203,14 @@ func (t *FetchHentaiTool) Execute(ctx context.Context, args json.RawMessage) (st
 		coverNote = "（封面和第 1 页都没抓到，不影响整本）"
 	}
 
+	if t.ledger != nil {
+		if err := t.ledger.MarkGallery(strconv.Itoa(g.ID)); err != nil {
+			log.Printf("[hentai] 记录本子 id 失败（不影响本次）：%v", err)
+		}
+	}
+
 	var b strings.Builder
+	b.WriteString(repeatWarn)
 	b.WriteString(fmt.Sprintf("抓到本子 %d：%s\n", g.ID, g.EnglishTitle))
 	if g.JapaneseTitle != "" && g.JapaneseTitle != g.EnglishTitle {
 		b.WriteString("原题：" + g.JapaneseTitle + "\n")
@@ -406,7 +424,13 @@ func (t *FetchHentaiTool) listMode(ctx context.Context, dir, heading string, ite
 		if title == "" {
 			title = it.JapaneseTitle
 		}
-		b.WriteString(fmt.Sprintf("%d. id=%d 《%s》 %d页 ♥%d\n", i+1, it.ID, title, it.NumPages, it.NumFavorites))
+		mark := ""
+		if t.ledger != nil {
+			if at, seen := t.ledger.SeenGallery(strconv.Itoa(it.ID)); seen {
+				mark = fmt.Sprintf("  ← 已拉过（%s），用户要「新的」就别选它", at.Format("15:04"))
+			}
+		}
+		b.WriteString(fmt.Sprintf("%d. id=%d 《%s》 %d页 ♥%d%s\n", i+1, it.ID, title, it.NumPages, it.NumFavorites, mark))
 	}
 
 	// 缩略图只存盘、不进上下文：data URL 一张 ≈ 10 万字符，
@@ -779,4 +803,20 @@ func longestToken(q string) string {
 		}
 	}
 	return best
+}
+
+// repeatGalleryWarning 同一本被重复抓时给模型的警告；没抓过返回空串
+func repeatGalleryWarning(l *SentLedger, id int) string {
+	if l == nil {
+		return ""
+	}
+	at, seen := l.SeenGallery(strconv.Itoa(id))
+	if !seen {
+		return ""
+	}
+	return fmt.Sprintf(
+		"⚠️ 这本（id=%d）在 %s 已经拉过并发给你了。\n"+
+			"如果用户要的是「新的/再来一个」，请换一本：先用 query 搜，候选里没标「已拉过」的再抓。\n"+
+			"如果用户明确说「再发一次/没收到」，那就继续用这本重发。\n",
+		id, at.Format("15:04"))
 }

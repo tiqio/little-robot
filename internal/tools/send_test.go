@@ -70,10 +70,9 @@ func TestSendRouting(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			// 每个子用例独立：清掉上一个用例留下的发送记录，避免内容相同时被去重拦住
-			_ = os.Remove(filepath.Join(dir, ".claw", "sent.json"))
+			// 每个子用例独立：用内存里的空记录表，避免上一个用例的发送记录把这次拦掉
 			s := &fakeSender{}
-			out, err := NewSendTool(dir).Execute(sendCtx(t, s), json.RawMessage(c.args))
+			out, err := newSendToolWith(dir, NewSentLedger("")).Execute(sendCtx(t, s), json.RawMessage(c.args))
 			if err != nil {
 				t.Fatalf("执行失败：%v（%s）", err, out)
 			}
@@ -181,9 +180,8 @@ func TestSendMissingSender(t *testing.T) {
 		t.Errorf("只有 FileSender 时图片应该走 file 通道兜底：%v", err)
 	}
 
-	// 什么都没有（先清掉发送记录，确保走到"没有通道"这个分支）
-	_ = os.Remove(filepath.Join(dir, ".claw", "sent.json"))
-	if _, err := NewSendTool(dir).Execute(context.Background(),
+	// 什么都没有（用空记录表，确保走到"没有通道"这个分支）
+	if _, err := newSendToolWith(dir, NewSentLedger("")).Execute(context.Background(),
 		json.RawMessage(`{"path":"out/photo.jpg"}`)); err == nil {
 		t.Error("两个 sender 都没有应该报错")
 	}

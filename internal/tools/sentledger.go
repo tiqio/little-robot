@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -24,6 +25,44 @@ type SentLedger struct {
 	mu    sync.Mutex
 	path  string
 	items map[string]sentEntry
+	// galleries 已经"拉过/发过"的本子 id：内容 hash 挡不住"同一本重新生成 PDF"
+	// （两次生成的文件字节不同），所以还需要 id 这一层的记忆。
+	galleries map[string]time.Time
+	// sources 已经下载过的图片来源（URL 哈希）：同一张图被 CDN 重新编码后字节会变，
+	// 内容 hash 对不上，但"来源还是那个 URL"——这一层防的是"又是同一张图"。
+	sources map[string]sourceEntry
+}
+
+// sourceEntry 一次图片下载记录（路径用于"直接复用已有文件"）
+type sourceEntry struct {
+	Path string    `json:"path"`
+	At   time.Time `json:"at"`
+}
+
+// ledgerFile 落盘格式（v2）：老的纯 map 格式也能读
+type ledgerFile struct {
+	Items     map[string]sentEntry   `json:"items"`
+	Galleries map[string]time.Time   `json:"galleries,omitempty"`
+	Sources   map[string]sourceEntry `json:"sources,omitempty"`
+}
+
+// 同一个路径共用一个实例：send 和 fetch_hentai 都要读写这张表，
+// 各自 New 一个会互相覆盖（并发写同一个 json）。
+var (
+	ledgerMu     sync.Mutex
+	ledgerByPath = map[string]*SentLedger{}
+)
+
+// sharedLedger 按路径取单例
+func sharedLedger(path string) *SentLedger {
+	ledgerMu.Lock()
+	defer ledgerMu.Unlock()
+	if l, ok := ledgerByPath[path]; ok {
+		return l
+	}
+	l := NewSentLedger(path)
+	ledgerByPath[path] = l
+	return l
 }
 
 // sentEntry 一条发送记录
@@ -39,7 +78,12 @@ type sentEntry struct {
 
 // NewSentLedger 打开/创建记录表；path 为空表示只在内存里记（测试用）
 func NewSentLedger(path string) *SentLedger {
-	l := &SentLedger{path: path, items: make(map[string]sentEntry)}
+	l := &SentLedger{
+		path:      path,
+		items:     make(map[string]sentEntry),
+		galleries: make(map[string]time.Time),
+		sources:   make(map[string]sourceEntry),
+	}
 	if path != "" {
 		l.load()
 		// 启动时把 out/ 里已存在的内容登记进来：
@@ -55,6 +99,21 @@ func (l *SentLedger) load() {
 	if err != nil {
 		return
 	}
+	// v2 格式
+	var lf ledgerFile
+	if err := json.Unmarshal(data, &lf); err == nil && (lf.Items != nil || lf.Galleries != nil || lf.Sources != nil) {
+		if lf.Items != nil {
+			l.items = lf.Items
+		}
+		if lf.Galleries != nil {
+			l.galleries = lf.Galleries
+		}
+		if lf.Sources != nil {
+			l.sources = lf.Sources
+		}
+		return
+	}
+	// 兼容 v1：整个文件就是一个 hash -> entry 的 map
 	var items map[string]sentEntry
 	if err := json.Unmarshal(data, &items); err != nil {
 		log.Printf("[Ledger] 记录表损坏，按空表处理：%v", err)
@@ -73,7 +132,11 @@ func (l *SentLedger) saveLocked() error {
 	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
 		return fmt.Errorf("创建记录表目录失败：%w", err)
 	}
-	data, err := json.MarshalIndent(l.items, "", " ")
+	data, err := json.MarshalIndent(ledgerFile{
+		Items:     l.items,
+		Galleries: l.galleries,
+		Sources:   l.sources,
+	}, "", " ")
 	if err != nil {
 		return fmt.Errorf("序列化记录表失败：%w", err)
 	}
@@ -166,4 +229,59 @@ func fileHash(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16], nil
+}
+
+// SeenGallery 这个本子是否已经拉过（返回最后一次时间）
+func (l *SentLedger) SeenGallery(id string) (time.Time, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	at, ok := l.galleries[id]
+	return at, ok
+}
+
+// MarkGallery 记下"这个本子拉过了"，立刻落盘
+func (l *SentLedger) MarkGallery(id string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.galleries[id] = time.Now()
+	if len(l.galleries) > 500 {
+		// 只留最近 500 条，避免无限增长
+		cut := time.Now().AddDate(0, 0, -30)
+		for k, v := range l.galleries {
+			if v.Before(cut) {
+				delete(l.galleries, k)
+			}
+		}
+	}
+	return l.saveLocked()
+}
+
+// sourceKey URL → 短哈希（URL 太长，表里不存原文）
+func sourceKey(rawURL string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(rawURL)))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+// SeenSource 这个来源是否下载过；返回上次落盘的路径，便于直接复用
+func (l *SentLedger) SeenSource(rawURL string) (string, time.Time, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	e, ok := l.sources[sourceKey(rawURL)]
+	return e.Path, e.At, ok
+}
+
+// MarkSource 记一次下载（立刻落盘）
+func (l *SentLedger) MarkSource(rawURL, relPath string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.sources[sourceKey(rawURL)] = sourceEntry{Path: relPath, At: time.Now()}
+	if len(l.sources) > 2000 {
+		cut := time.Now().AddDate(0, 0, -30)
+		for k, v := range l.sources {
+			if v.At.Before(cut) {
+				delete(l.sources, k)
+			}
+		}
+	}
+	return l.saveLocked()
 }
