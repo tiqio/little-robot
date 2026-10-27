@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"little-robot/internal/guard"
+	"little-robot/internal/mcp"
 	"little-robot/internal/observability"
 	"little-robot/internal/session"
 	"log"
@@ -186,6 +187,36 @@ func main() {
 
 	// 主注册表：在原有工具之外，多一个“派子代理”，但是这个时候需要eng来RunSub
 	registry.Register(tools.NewSubagentTool(eng, subReg))
+
+	// MCP：把外部服务端工具接入同一个registry
+	// 和本地工具的区别在：名字带mcp_前缀，schema来自远端，执行跨了进程
+	if opts.MCPConfig != "" {
+		mcpClients, err := mcp.StartAll(context.Background(), opts.MCPConfig)
+		if err != nil {
+			log.Printf("[MCP] 启动失败：%v", err)
+		} else {
+			defer func() {
+				for _, c := range mcpClients {
+					_ = c.Close()
+				}
+			}()
+
+			for _, c := range mcpClients {
+				if !c.HasTools() {
+					log.Printf("[MCP:%s] 没有声明tools的能力，跳过", c.Name())
+					continue
+				}
+				defs, err := c.ListTools(context.Background())
+				if err != nil {
+					log.Printf("[MCP:%s] 拉取任务失败：%v", c.Name(), err)
+					continue
+				}
+				for _, def := range defs {
+					registry.Register(tools.NewMCPTool(c.Name(), def, c))
+				}
+			}
+		}
+	}
 
 	// if err := eng.Run(context.Background(), "帮我检查当前目录的文件"); err != nil {
 	// if err := eng.Run(context.Background(), "北京今天天气怎么样？适合出去跑步吗？"); err != nil {

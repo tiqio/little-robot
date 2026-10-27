@@ -1,0 +1,9 @@
+{
+    "servers": {
+        "fs": {
+            "command": "cmd",
+            "args": ["/c", "mcp-server-filesystem", "."],
+            "timeoutSeconds": 120
+        }
+    }
+}

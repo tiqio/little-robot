@@ -774,3 +774,14 @@ func searchNekosBest(ctx context.Context, keyword string) ([]imageCandidate, err
 	}
 	return out, nil
 }
+
+// CarryImages 让 tools 包之外的工具（比如 MCP 适配器）也能往图片通道塞图。
+// 引擎靠 imageCarrierFrom(ctx) 把图取出来，作为额外的 user 消息注入模型。
+func CarryImages(ctx context.Context, urls ...string) {
+	if len(urls) == 0 {
+		return
+	}
+	if box, ok := ctx.Value(imageCarrierKey{}).(*[]string); ok && box != nil {
+		*box = append(*box, urls...)
+	}
+}

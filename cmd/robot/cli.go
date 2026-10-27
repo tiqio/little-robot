@@ -17,6 +17,7 @@ type options struct {
 	SessionID string // 会话ID，同名会接着上次的历史
 	Think     bool   // 两阶段慢思考
 	Plan      bool   // 计划模式（维护PLAN.md/TODO.md）
+	MCPConfig string // MCP配置文件路径（JSON）；空表示不接MCP
 }
 
 // handleArgs 解析命令行参数。返回 handled=true 表示本次调用只需要打印信息并退出，
@@ -32,6 +33,7 @@ func handleArgs(args []string, stdout, stderr io.Writer) (opts options, handled 
 	fs.BoolVar(&opts.Think, "think", false, "开启两阶段慢思考（先规划再动手）")
 	fs.BoolVar(&opts.Plan, "plan", true, "开启计划模式，让Agent维护PLAN.md/TODO.md（-plan=false关闭）")
 	fs.BoolVar(&showVersion, "version", false, "打印版本号后退出")
+	fs.StringVar(&opts.MCPConfig, "mcp", "", "MCP 配置文件路径（JSON），接入外部工具")
 
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "用法：robot -p \"任务描述\" [选项]\n\n选项：\n")
