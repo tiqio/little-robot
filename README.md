@@ -41,7 +41,8 @@ LLM_REQUEST_DEBUG=false
 ```
 go run ./cmd/robot -p "记住：代号蓝鲸，只回答收到" -dir /tmp/robot-demo -session demo
 go run ./cmd/robot -p "代号是什么？只回答代号" -dir /tmp/robot-demo -session demo
- .\robot -p "只读任务：用 mcp 工具列出当前目录的文件，一句话总结。禁止修改任何文件。" -mcp mcp.json -session smoke1 -dir "$env:TEMP\robot-mcp-smoke" -plan=false
+.\robot -p "只读任务：用 mcp 工具列出当前目录的文件，一句话总结。禁止修改任何文件。" -mcp mcp.json -session smoke1 -dir "$env:TEMP\robot-mcp-smoke" -plan=false
+npm.cmd i -g @modelcontextprotocol/server-filesystem
 
 rm -rf /tmp/robot-plan && go run ./cmd/robot \
   -p "在 workspace 里创建 hello.txt 写入 hello world" \
